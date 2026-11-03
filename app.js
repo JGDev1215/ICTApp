@@ -1,3 +1,4 @@
+// Local UI SHA-256: 2630e488fa45bb78a6f7b1a5719b9ed7313df6c016c4ae53cdffe3350349fde4
 "use strict";
 
 
@@ -10,31 +11,138 @@ const models = [
 ];
 
 const CHECKLIST_VERSION = "2026-11-03.2";
-const state = {exampleMode:"valid",screen:"home", returnScreen:"home", model:null, direction:"long", variant:"fvg", answers:{}, timeValue:"", dateValue:"", clockValue:"", questionIndex:0, entries:[], apiStatus:"loading", saving:false, saveMessage:null, savedEntry:null, undoDraft:null, draftNotice:null, storageAvailable:true};
+const state = {exampleMode:"valid",screen:"liquidity", returnScreen:"liquidity", draftActive:true, liquidity:{skipped:false,swept:[],target:null}, liquidityError:"", liquidityReturn:"home", liquidityOpen:null, entryTimeUtc:null, inputTimeZone:null, scoreboard:null, selectedEntry:null, outcomeSelection:"not_recorded", outcomeMessage:null, outcomeSaved:false, model:null, direction:"long", variant:"fvg", answers:{}, timeValue:"", dateValue:"", clockValue:"", questionIndex:0, entries:[], apiStatus:"loading", saving:false, saveMessage:null, savedEntry:null, undoDraft:null, draftNotice:null, storageAvailable:true};
+const liquidityTypes = {
+  previous_day_high:'Previous day high',previous_day_low:'Previous day low',
+  previous_week_high:'Previous week high',previous_week_low:'Previous week low',
+  session_high:'Session high',session_low:'Session low',equal_highs:'Equal highs',equal_lows:'Equal lows',
+  swing_high:'Swing high',swing_low:'Swing low',other:'Other',no_sweep:'No sweep observed',not_sure:'Not sure',not_decided:'Not decided'
+};
+const describedLiquidity=new Set(['session_high','session_low','swing_high','swing_low','other']);
+const exclusiveSweeps=new Set(['no_sweep','not_sure']);
+const outcomes={not_recorded:'Not recorded',not_taken:'Not taken',open:'Open',win:'Win',loss:'Loss',break_even:'Break-even'};
+function escapeHTML(value){return String(value??'').replace(/[&<>"']/g,character=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));}
+function validLiquidity(value,draft=false){
+  if(!value || typeof value!=='object' || typeof value.skipped!=='boolean' || !Array.isArray(value.swept) || value.swept.length>13) return false;
+  const reference=(item,target)=>item && typeof item==='object' && Object.hasOwn(liquidityTypes,item.type) &&
+    (target?!exclusiveSweeps.has(item.type):item.type!=='not_decided') && typeof item.label==='string' && item.label.length<=160 &&
+    (draft || item.label.trim().length>0);
+  if(!value.swept.every(item=>reference(item,false)) || new Set(value.swept.map(item=>item.type)).size!==value.swept.length ||
+     (value.swept.some(item=>exclusiveSweeps.has(item.type)) && value.swept.length!==1) ||
+     !(value.target===null || reference(value.target,true))) return false;
+  return draft || (value.skipped ? value.swept.length===0 && value.target===null : value.swept.length>0 && value.target!==null);
+}
+function validSnapshot(snapshot){
+  return snapshot && snapshot.schema_version===1 && ['long','short'].includes(snapshot.direction) &&
+    Array.isArray(snapshot.checks) && snapshot.checks.length>0 && snapshot.checks.length<=50 &&
+    snapshot.checks.every(check=>check && typeof check.id==='string' && check.id.length>0 && check.id.length<=100 &&
+      typeof check.title==='string' && check.title.length>0 && check.title.length<=300 && ['yes','no'].includes(check.answer) && typeof check.automatic==='boolean') &&
+    new Set(snapshot.checks.map(check=>check.id)).size===snapshot.checks.length && validLiquidity(snapshot.liquidity);
+}
+function canonicalLiquidity(){
+  return state.liquidity.skipped?{skipped:true,swept:[],target:null}:{skipped:false,swept:state.liquidity.swept.map(item=>({...item,label:item.label.trim()})),target:state.liquidity.target?{...state.liquidity.target,label:state.liquidity.target.label.trim()}:null};
+}
+function matchingSnapshot(expected,actual){
+  if(!validSnapshot(expected) || !validSnapshot(actual) || expected.direction!==actual.direction || expected.checks.length!==actual.checks.length) return false;
+  if(!expected.checks.every(check=>actual.checks.some(other=>['id','title','answer','automatic'].every(key=>other[key]===check[key])))) return false;
+  const a=expected.liquidity,b=actual.liquidity;
+  const sameReference=(one,two)=>one===null?two===null:two && one.type===two.type && one.label===two.label;
+  return a.skipped===b.skipped && a.swept.length===b.swept.length && a.swept.every((item,index)=>sameReference(item,b.swept[index])) && sameReference(a.target,b.target);
+}
+function snapshotForReview(){
+  return {schema_version:1,direction:state.direction,checks:requiredChecks().map(entry=>({id:entry.id,title:entry.title,answer:answerFor(entry),automatic:Boolean(entry.auto)})),liquidity:canonicalLiquidity()};
+}
+function liquidityProblem(value){
+  if(!value.swept.length) return 'Select swept liquidity, No sweep observed, or Not sure. You can also skip this page.';
+  if(!value.target) return 'Select one target, or Not decided. You can also skip this page.';
+  if([...value.swept,value.target].some(item=>!item.label.trim())) return 'Add an identifying label for every selected session, swing, or Other reference.';
+  return '';
+}
+function liquiditySummary(value){
+  if(!value || value.skipped) return '<p>Liquidity skipped</p>';
+  const reference=item=>`${escapeHTML(liquidityTypes[item.type]||item.type)}${describedLiquidity.has(item.type)?` · ${escapeHTML(item.label)}`:''}`;
+  return `<p><span>Swept</span> ${value.swept.length?value.swept.map(reference).join(', '):'Not selected'}</p><p><span>Target</span> ${value.target?reference(value.target):'Not selected'}</p>`;
+}
+function renderLiquidity(){
+  const choices=field=>Object.entries(liquidityTypes).filter(([type])=>field==='swept'?type!=='not_decided':!exclusiveSweeps.has(type)).map(([type,label])=>{
+    const selected=field==='swept'?state.liquidity.swept.find(item=>item.type===type):state.liquidity.target?.type===type?state.liquidity.target:null;
+    return `<div class="liquidity-option"><button type="button" class="liquidity-choice" data-liquidity="${field}" data-type="${type}" aria-pressed="${Boolean(selected)}"><span aria-hidden="true">${selected?'✓':'+'}</span>${label}</button>${selected && describedLiquidity.has(type)?`<label class="reference-label">${type==='other'?'Description':'Identifying label'}<input type="text" maxlength="160" data-liquidity-label="${field}" data-type="${type}" value="${escapeHTML(selected.label)}" placeholder="${type==='other'?'Describe this reference':type.startsWith('session')?'e.g. London low':'e.g. 15-minute swing high'}" required></label>`:''}</div>`;
+  }).join('');
+  const returnToReview=state.liquidityReturn==='review' && state.model;
+  layout('<p class="eyebrow">Entry review · Optional context</p><h1 tabindex="-1">Liquidity</h1><p class="review-detail">Record the liquidity you observed and your intended draw.</p>',`<button type="button" class="secondary-button" data-action="liquidity-skip">Skip for now</button><details class="liquidity-section" ${state.liquidityOpen==='swept'?'open':''}><summary>What liquidity was swept?</summary><p class="helper">Select all that apply. No sweep and Not sure are exclusive.</p><div class="liquidity-options" role="group" aria-label="Swept liquidity">${choices('swept')}</div></details><details class="liquidity-section" ${state.liquidityOpen==='target'?'open':''}><summary>What is your target liquidity?</summary><p class="helper">Choose one primary target.</p><div class="liquidity-options" role="group" aria-label="Target liquidity">${choices('target')}</div></details><div class="liquidity-summary">${liquiditySummary(state.liquidity)}</div><p class="helper">This context has no scoring effect. All required model checks still apply.</p><p id="liquidity-error" class="feedback error" role="alert">${escapeHTML(state.liquidityError)}</p><div class="action-stack"><button type="button" class="primary-button" data-action="liquidity-continue">${returnToReview?'Return to review':'Continue to models'} →</button></div>`);
+}
+function selectLiquidity(field,type){
+  if(!['swept','target'].includes(field) || !Object.hasOwn(liquidityTypes,type)) return;
+  const reference={type,label:describedLiquidity.has(type)?'':liquidityTypes[type]};
+  state.draftActive=true;state.liquidity.skipped=false;state.liquidityError='';state.liquidityOpen=field;
+  if(field==='target' && !exclusiveSweeps.has(type)) state.liquidity.target=state.liquidity.target?.type===type?state.liquidity.target:reference;
+  else if(field==='swept' && type!=='not_decided'){
+    const exists=state.liquidity.swept.some(item=>item.type===type);
+    state.liquidity.swept=exists?state.liquidity.swept.filter(item=>item.type!==type):exclusiveSweeps.has(type)?[reference]:[...state.liquidity.swept.filter(item=>!exclusiveSweeps.has(item.type)),reference];
+  }
+  renderLiquidity();
+  const focus=screen.querySelector(describedLiquidity.has(type)?`[data-liquidity-label="${field}"][data-type="${type}"]`:`[data-liquidity="${field}"][data-type="${type}"]`);
+  if(focus) focus.focus({preventScroll:true});
+}
+function qualityText(snapshot){
+  if(!validSnapshot(snapshot)) return 'Detailed score unavailable';
+  const yes=snapshot.checks.filter(check=>check.answer==='yes').length,total=snapshot.checks.length;
+  return `${yes}/${total} · ${Math.round(yes/total*100)}% checklist`;
+}
+function outcomeLabel(outcome){return outcome==='not_recorded' || !Object.hasOwn(outcomes,outcome)?'Trade outcome not recorded':outcomes[outcome];}
+function entrySummary(entry){
+  const snapshot=entry.entry_snapshot;
+  return `<div class="saved-card"><strong>${escapeHTML(labels[entry.checklist_id]||'Unknown checklist')}</strong><span>${escapeHTML(formatLocal(entry.entry_time_utc))}</span><span class="${entry.checklist_met?'good':'bad'}">Checklist ${entry.checklist_met?'Met':'Not met'}</span><span class="quality-summary">${qualityText(snapshot)}</span><small>${escapeHTML(versionLabel(entry.checklist_version))}${validSnapshot(snapshot)?` · ${snapshot.direction==='long'?'Long':'Short'}`:''}</small></div>${nyTimeNote(entry.checklist_id,entry.entry_time_utc)}`;
+}
+function renderScoreboard(){
+  const score=state.scoreboard;
+  if(!score) return '<section class="scoreboard"><p class="eyebrow">All time</p><p>Scoreboard unavailable. Refresh to load all-time totals.</p></section>';
+  const percentage=value=>typeof value==='number' && Number.isFinite(value)?`${Math.round(value)}%`:'—';
+  return `<section class="scoreboard" aria-label="All-time scoreboard"><div class="scoreboard-title"><h2>Scoreboard</h2><span>All time</span></div><div class="score-grid"><div><strong>${score.win_points}</strong><span>Win points</span><small>${score.closed_trades} closed trades · +1 per win</small></div><div><strong>${percentage(score.win_rate)}</strong><span>Win rate</span><small>${score.wins} wins / ${score.closed_trades} closed trades</small></div><div><strong>${percentage(score.average_checklist_quality)}</strong><span>Average checklist quality</span><small>${score.scored_reviews} scored reviews</small></div><div><strong>${percentage(score.full_checklist_rate)}</strong><span>Full-checklist rate</span><small>${score.full_checklist_reviews} / ${score.scored_reviews} scored reviews</small></div></div><p class="helper">${score.total_reviews} total reviews · ${score.scored_reviews} scored · ${score.unavailable_reviews} detailed scores unavailable</p><p class="helper">Closed trades: ${score.wins} Win · ${score.losses} Loss · ${score.break_even} Break-even</p>${score.closed_trades===0?'<p class="helper">Record an outcome to see your win rate.</p>':''}<details class="source-details"><summary>How scoring works</summary><p>One point per Win. Win rate includes Win, Loss and Break-even; Open, Not taken and Not recorded are excluded.</p><p>Checklist quality is the percentage of required Yes answers. Each scored review has equal weight in the average. Full-checklist rate counts reviews with every required answer Yes.</p><p>Liquidity is optional and adds no points or penalty. Older entries without individual answers keep their original result and do not enter quality averages.</p></details></section>`;
+}
+function openOutcome(){state.outcomeSaved=false;state.outcomeSelection=Object.hasOwn(outcomes,state.selectedEntry?.outcome)?state.selectedEntry.outcome:'not_recorded';state.outcomeMessage=null;show('outcome');}
+async function saveOutcome(){
+  if(state.saving || !state.selectedEntry || !Object.hasOwn(outcomes,state.outcomeSelection)) return;
+  const entry=state.selectedEntry,outcome=state.outcomeSelection;
+  state.saving=true;state.outcomeMessage=null;state.outcomeSaved=false;render();
+  try{
+    const updated=await fetchEntriesJSON({method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({outcome})},`/api/entries/${entry.id}/outcome`);
+    if(!updated || updated.id!==entry.id || updated.outcome!==outcome) throw new Error('Unexpected response');
+    state.selectedEntry={...entry,outcome:updated.outcome,outcome_updated_at:updated.outcome_updated_at};
+    if(state.savedEntry?.id===entry.id) state.savedEntry=state.selectedEntry;
+    state.outcomeSaved=true;state.saving=false;syncSavingControls();show('detail');await loadEntries();
+  }catch{
+    state.saving=false;syncSavingControls();state.outcomeMessage='Outcome could not be confirmed. Retry saving your selected outcome.';render();
+  }
+}
+
 const $ = (id) => document.getElementById(id);
 let entryLoadSequence = 0;
 const saveAttempts = new Map();
 const savingControls = new Map();
 const draftStorageKey = "ict-entry-desk-draft-v1";
 function draftSnapshot(){
-  return {checklistVersion:CHECKLIST_VERSION,model:state.model,direction:state.direction,variant:state.variant,
+  const time=parsedEntryTime();
+  return {entryTimeUtc:time.valid?time.iso:null,inputTimeZone:deviceTimeZone(),liquidityReturn:state.liquidityReturn,checklistVersion:CHECKLIST_VERSION,draftActive:state.draftActive,liquidity:JSON.parse(JSON.stringify(state.liquidity)),model:state.model,direction:state.direction,variant:state.variant,
     answers:{...state.answers},dateValue:state.dateValue,clockValue:state.clockValue,
-    screen:state.screen,returnScreen:state.returnScreen,questionIndex:state.questionIndex};
+    screen:["detail","outcome","saved"].includes(state.screen)?state.returnScreen:state.screen,returnScreen:state.returnScreen,questionIndex:state.questionIndex};
 }
 function persistDraft(){
   try{
-    if(!state.model && !saveAttempts.size && !state.undoDraft) sessionStorage.removeItem(draftStorageKey);
+    if(!state.draftActive && !state.model && !saveAttempts.size && !state.undoDraft) sessionStorage.removeItem(draftStorageKey);
     else sessionStorage.setItem(draftStorageKey,JSON.stringify({...draftSnapshot(),draftVersion:2,
       saveAttempts:[...saveAttempts],undoDraft:state.undoDraft}));
     state.storageAvailable=true;updateDraftStatus();return true;
   }catch{state.storageAvailable=false;updateDraftStatus();return false;}
 }
 function applyDraft(draft){
-  if(!draft || !models.some(model=>model.id===draft.model) ||
+  if(!draft || !(models.some(model=>model.id===draft.model) || (draft.model===null && draft.draftActive===true)) ||
      !["long","short"].includes(draft.direction) || !["fvg","wick"].includes(draft.variant)) return false;
   state.model=draft.model;state.direction=draft.direction;state.variant=draft.variant;
+  state.liquidityReturn=draft.liquidityReturn==='review'?'review':'home';
+  state.draftActive=true;state.liquidity=validLiquidity(draft.liquidity,true) ? JSON.parse(JSON.stringify(draft.liquidity)) : {skipped:true,swept:[],target:null};
   const current=draft.checklistVersion===CHECKLIST_VERSION;
-  const allowed=new Set(requiredChecks().map(entry=>entry.id));
+  const allowed=new Set(state.model ? requiredChecks().map(entry=>entry.id) : []);
   state.answers={};
   if(current && draft.answers && typeof draft.answers==="object" && !Array.isArray(draft.answers)){
     for(const [id,answer] of Object.entries(draft.answers))
@@ -43,22 +151,37 @@ function applyDraft(draft){
   state.dateValue=typeof draft.dateValue==="string" && /^\d{4}-\d{2}-\d{2}$/.test(draft.dateValue) ? draft.dateValue : "";
   state.clockValue=typeof draft.clockValue==="string" && /^\d{2}:\d{2}$/.test(draft.clockValue) ? draft.clockValue : "";
   state.timeValue=state.dateValue && state.clockValue ? `${state.dateValue}T${state.clockValue}` : "";
-  state.questionIndex=current && Number.isInteger(draft.questionIndex) ? Math.max(0,Math.min(draft.questionIndex,requiredChecks().length-1)) : 0;
-  state.screen=current && ["home","setup","check","review","history"].includes(draft.screen) ? draft.screen : "setup";
-  state.returnScreen=current && ["home","setup","check","review"].includes(draft.returnScreen) ? draft.returnScreen : "setup";
+  state.entryTimeUtc=null;state.inputTimeZone=deviceTimeZone();
+  const savedInstant=typeof draft.entryTimeUtc==='string'?new Date(draft.entryTimeUtc):null;
+  let timeRecheck=false;
+  if(savedInstant && Number.isFinite(savedInstant.getTime()) && typeof draft.inputTimeZone==='string'){
+    const local=localTimeValue(savedInstant);
+    if(draft.inputTimeZone!==deviceTimeZone()){
+      state.timeValue=local;[state.dateValue,state.clockValue]=local.split('T');
+      state.draftNotice=`Your entry instant is preserved. Time is now displayed in ${deviceTimeZone()} (previously ${draft.inputTimeZone}).`;
+    }
+    if(local===state.timeValue) state.entryTimeUtc=savedInstant.toISOString();
+    else {timeRecheck=true;state.answers={};state.draftNotice='The saved time needs review. Confirm the entry time and answer the checks again.';}
+  }
+  if(current && state.timeValue && !state.entryTimeUtc){timeRecheck=true;state.answers={};state.draftNotice='This earlier draft has no preserved timezone. Confirm the entry time and answer the checks again.';}
+  state.questionIndex=current && Number.isInteger(draft.questionIndex) ? Math.max(0,Math.min(draft.questionIndex,state.model ? requiredChecks().length-1 : 0)) : 0;
+  state.screen=current && ["liquidity","home","setup","check","review","history"].includes(draft.screen) ? draft.screen : "setup";
+  state.returnScreen=current && ["liquidity","home","setup","check","review"].includes(draft.returnScreen) ? draft.returnScreen : "setup";
+  if(timeRecheck) state.screen=state.model?"setup":"liquidity";
   if(!current) state.draftNotice="The checklist changed. Your entry details are restored; review each check again.";
   return true;
 }
 function validPending(pair){
-  if(!Array.isArray(pair) || pair.length!==2 || typeof pair[0]!=="string" || pair[0].length>1024 ||
+  if(!Array.isArray(pair) || pair.length!==2 || typeof pair[0]!=="string" || pair[0].length>16384 ||
      typeof pair[1]!=="string" || !/^[A-Za-z0-9_-]{16,128}$/.test(pair[1])) return false;
   try{
     const p=JSON.parse(pair[0]),keys=Object.keys(p).sort().join(',');
-    return (keys==='checklist_id,checklist_met,entry_time_utc' || keys==='checklist_id,checklist_met,checklist_version,entry_time_utc') &&
+    return ['checklist_id,checklist_met,entry_time_utc','checklist_id,checklist_met,checklist_version,entry_time_utc','checklist_id,checklist_met,checklist_version,entry_snapshot,entry_time_utc'].includes(keys) &&
       ['ote','turtle','drill_fvg','drill_wick','silver','ifvg'].includes(p.checklist_id) &&
       typeof p.entry_time_utc==='string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/.test(p.entry_time_utc) &&
       !Number.isNaN(Date.parse(p.entry_time_utc)) && typeof p.checklist_met==='boolean' &&
-      (p.checklist_version===undefined || (typeof p.checklist_version==='string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(p.checklist_version)));
+      (p.checklist_version===undefined || (typeof p.checklist_version==='string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(p.checklist_version))) &&
+      (p.entry_snapshot===undefined || validSnapshot(p.entry_snapshot));
   }catch{return false;}
 }
 function updateDraftStatus(){
@@ -70,14 +193,14 @@ function restoreDraft(){
     const draft=JSON.parse(sessionStorage.getItem(draftStorageKey));
     if(!draft || typeof draft!=='object') return;
     applyDraft(draft);
-    if(draft.undoDraft && draft.undoDraft.checklistVersion===CHECKLIST_VERSION && models.some(m=>m.id===draft.undoDraft.model)) state.undoDraft=draft.undoDraft;
+    if(draft.undoDraft && draft.undoDraft.checklistVersion===CHECKLIST_VERSION && (models.some(m=>m.id===draft.undoDraft.model) || draft.undoDraft.draftActive===true)) state.undoDraft=draft.undoDraft;
     if(Array.isArray(draft.saveAttempts)) for(const pair of draft.saveAttempts) if(validPending(pair)) saveAttempts.set(pair[0],pair[1]);
     if(saveAttempts.size){state.screen='recovery';state.saveMessage=null;}
   }catch{state.storageAvailable=false;}
 }
 function syncSavingControls(){
   if(state.saving){
-    document.querySelectorAll("button,input").forEach(control => {
+    document.querySelectorAll("button,input,select,textarea").forEach(control => {
       if(!savingControls.has(control)) savingControls.set(control,control.disabled);
       control.disabled=true;
     });
@@ -88,16 +211,18 @@ function syncSavingControls(){
 }
 function clearDraft(){
   saveAttempts.clear();
+  state.draftActive=false;state.liquidity={skipped:false,swept:[],target:null};state.liquidityError="";state.liquidityReturn="home";state.liquidityOpen=null;state.entryTimeUtc=null;state.inputTimeZone=null;
   state.model=null;state.answers={};state.timeValue="";state.dateValue="";state.clockValue="";state.questionIndex=0;state.saveMessage=null;state.draftNotice=null;
   persistDraft();
 }
 function replaceDraft(model=null){
   if(state.saving) return;
   if(saveAttempts.size){show('recovery');return;}
-  if(state.model) state.undoDraft=draftSnapshot();
-  clearDraft();state.savedEntry=null;
-  if(model){state.model=model;state.direction='long';state.variant='fvg';setNow();}
-  show('home');
+  if(state.draftActive || state.model) state.undoDraft=draftSnapshot();
+  const liquidity=JSON.parse(JSON.stringify(state.liquidity));
+  clearDraft();state.savedEntry=null;state.selectedEntry=null;state.draftActive=true;
+  if(model){state.liquidity=liquidity;state.model=model;state.direction='long';state.variant='fvg';setNow();show('home');}
+  else show('liquidity');
 }
 function undoReplacement(){
   if(state.saving || saveAttempts.size || !state.undoDraft) return;
@@ -105,17 +230,17 @@ function undoReplacement(){
 }
 function openHistory(){
   if(state.saving) return;
-  if(state.screen!=='history') state.returnScreen=state.screen;
+  if(!['history','detail','outcome','saved'].includes(state.screen)) state.returnScreen=state.screen;
   show('history');
 }
 function resumeReview(){
   if(saveAttempts.size){show('recovery');return;}
-  if(!state.model) return;
+  if(!state.model && !state.draftActive) return;
   const destination=state.returnScreen==='history'?'setup':state.returnScreen;
-  show(['setup','check','review'].includes(destination)?destination:'setup');
+  show(['liquidity','home','setup','check','review'].includes(destination)?destination:(state.model?'setup':'liquidity'));
 }
-async function fetchEntriesJSON(options){
-  return window.entryBrowserLog(options);
+async function fetchEntriesJSON(options,url="/api/entries"){
+  return window.entryBrowserLog(options,url);
 }
 
 function modelInfo(){ return models.find(model => model.id === state.model); }
@@ -123,14 +248,33 @@ function directional(longText, shortText){ return state.direction === "long" ? l
 function item(id,title,description,kind="source",optional=false,auto=null){ return {id,title,description,kind,optional,auto}; }
 function checklistId(){ return state.model === "drill" ? `drill_${state.variant}` : state.model; }
 
+function deviceTimeZone(){return Intl.DateTimeFormat().resolvedOptions().timeZone || 'device local time';}
+function localTimeValue(date){
+  const pad=value=>String(value).padStart(2,'0');
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 function parsedEntryTime(){
   if(!state.timeValue) return {valid:false,reason:"Select an entry time."};
-  const date = new Date(state.timeValue);
+  if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(state.timeValue)) return {valid:false,reason:"Enter a valid entry time."};
+  let date = new Date(state.timeValue);
   if(Number.isNaN(date.getTime())) return {valid:false,reason:"Enter a valid entry time."};
-  const pad = value => String(value).padStart(2,"0");
-  const roundTrip = `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  if(roundTrip !== state.timeValue.slice(0,16)) return {valid:false,reason:"This local time is invalid at a daylight saving change. Choose another time."};
-  return {valid:true,date,iso:date.toISOString()};
+  if(localTimeValue(date)!==state.timeValue) return {valid:false,reason:"This local time is invalid at a daylight saving change. Choose another time."};
+  // A restored instant disambiguates a repeated local hour, including a zone change.
+  const retained=state.entryTimeUtc?new Date(state.entryTimeUtc):null;
+  if(retained && Number.isFinite(retained.getTime()) && localTimeValue(retained)===state.timeValue) date=retained;
+  const repeated=[-120,-60,-30,30,60,120].some(minutes=>localTimeValue(new Date(date.getTime()+minutes*60000))===state.timeValue);
+  const offset=new Intl.DateTimeFormat('en',{timeZoneName:'shortOffset'}).formatToParts(date).find(part=>part.type==='timeZoneName')?.value || '';
+  return {valid:true,date,iso:date.toISOString(),repeated,note:repeated?`Repeated local hour: ${retained?'the saved instant is retained':'new entries use the earlier occurrence'} (${offset}).`:''};
+}
+function setEntryTime(dateValue,clockValue){
+  const previous=parsedEntryTime(),nextValue=dateValue && clockValue?`${dateValue}T${clockValue}`:'';
+  if(nextValue!==state.timeValue) state.entryTimeUtc=null;
+  state.dateValue=dateValue;state.clockValue=clockValue;state.timeValue=nextValue;state.inputTimeZone=deviceTimeZone();
+  const next=parsedEntryTime();
+  if((previous.valid?previous.iso:null)!==(next.valid?next.iso:null) && Object.keys(state.answers).length){
+    state.answers={};state.draftNotice='Entry time changed. Review each chart condition again for this entry.';
+  }
+  state.entryTimeUtc=next.valid?next.iso:null;state.saveMessage=null;
 }
 
 function checklist(){
@@ -503,19 +647,17 @@ function show(name){
 function layout(top,body){
   persistDraft();
   const status=state.storageAvailable ? 'Draft saved in this tab' : 'Draft recovery unavailable — browser storage is blocked or full';
-  const notice=state.draftNotice ? `<p class="notice" role="status">${state.draftNotice}</p>` : '';
+  const notice=state.draftNotice ? `<p class="notice" role="status">${escapeHTML(state.draftNotice)}</p>` : '';
   const undo=state.undoDraft && !saveAttempts.size ? '<button class="text-button" type="button" data-action="undo-draft">Undo last review replacement</button>' : '';
-  screen.innerHTML = `${top}${notice}${body}${state.model || saveAttempts.size ? `<p id="draft-status" class="draft-status ${state.storageAvailable?'':'error'}" role="status">${status}</p>` : ''}${undo}`;
+  screen.innerHTML = `${top}${notice}${body}${state.draftActive || state.model || saveAttempts.size ? `<p id="draft-status" class="draft-status ${state.storageAvailable?'':'error'}" role="status">${status}</p>` : ''}${undo}`;
 }
 function closeMenu(){
   $("header-menu").hidden=true;
   $("menu-button").setAttribute("aria-expanded","false");
 }
 function setNow(){
-  const now=new Date();const pad=value=>String(value).padStart(2,"0");
-  state.dateValue=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
-  state.clockValue=`${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  state.timeValue=`${state.dateValue}T${state.clockValue}`;
+  const [date,clock]=localTimeValue(new Date()).split('T');
+  setEntryTime(date,clock);
 }
 function stepSegments(active){
   return `<div class="step-segments" aria-hidden="true">${[1,2,3,4,5].map(step => `<span class="${step <= active ? "active" : ""}"></span>`).join("")}</div>`;
@@ -526,7 +668,7 @@ function backRow(label,action,active=1,count=""){
 function renderHome(){
   const cards = models.map(model => `<button class="model-card" type="button" data-model="${model.id}" aria-pressed="${state.model === model.id}"><span class="model-icon" aria-hidden="true">${glyphs[model.id]}</span><strong>${model.title}</strong><span class="model-select" aria-hidden="true">${state.model === model.id ? "✓" : ""}</span></button>`).join("");
   layout(`<div class="home-rule" aria-hidden="true"></div><h1 tabindex="-1">Choose Model</h1>`,
-    `<div class="card-list">${cards}</div>${chartIllustration("home")}<div class="action-stack"><button class="primary-button" type="button" data-action="choose-continue" ${state.model ? "" : "disabled"}>Continue <span aria-hidden="true">→</span></button></div>`);
+    `<div class="liquidity-summary">${liquiditySummary(state.liquidity)}<button type="button" class="text-button" data-action="liquidity">Edit liquidity</button></div><div class="card-list">${cards}</div>${chartIllustration("home")}<div class="action-stack"><button class="primary-button" type="button" data-action="choose-continue" ${state.model ? "" : "disabled"}>Continue <span aria-hidden="true">→</span></button></div>`);
 }
 function setupGuard(){ return checklist().guard || ""; }
 function renderSetup(){
@@ -547,7 +689,8 @@ function updateSetupTime(){
     const windowResult = checkSilverWindow();
     helper.textContent = windowResult.message;
     helper.className = `helper ${windowResult.status === "no" ? "error" : ""}`;
-  }else{helper.textContent="Saved in UTC; displayed in your local time.";helper.className="helper";}
+  }else{helper.textContent=`New York: ${formatNewYork(parsed.iso)}. Saved in UTC; displayed in ${deviceTimeZone()}.`;helper.className="helper";}
+  if(parsed.valid && parsed.note) helper.textContent+=` ${parsed.note}`;
   $("start-button").disabled = !parsed.valid || Boolean(setupGuard());
 }
 function renderQuestion(){
@@ -594,44 +737,41 @@ function renderReview(){
   const rows = checks.map((entry,index) => `<button class="check-row" type="button" data-edit="${index}" data-status="${answerFor(entry)}" aria-label="Edit check ${index+1}: ${promptFor(entry)}"><span class="check-num">${index+1}</span><span class="check-label">${promptFor(entry)}</span><span class="check-status" aria-hidden="true">${answerFor(entry) === "yes" ? "✓" : answerFor(entry) === "no" ? "×" : "?"}</span></button>`).join("");
   const sources = modelInfo().sources.map(source => `<a href="${source.href}" target="_blank" rel="noopener noreferrer">${source.label} ↗</a>`).join("");
   const time = parsedEntryTime();
-  const saveBlocked = !result.resolved || !time.valid || state.apiStatus !== "ready" || state.saving;
+  const liquidityValid=validLiquidity(canonicalLiquidity());
+  const saveBlocked = !state.storageAvailable || !liquidityValid || !result.resolved || !time.valid || state.apiStatus !== "ready" || state.saving;
   layout(`${backRow("Checks","previous",4)}<h1 tabindex="-1">Review</h1>`,
-    `<div class="review-card ${resultClass}"><div class="review-result"><span class="review-icon" aria-hidden="true">${icon}</span><h2>${resultTitle}</h2></div><div class="review-summary"><div><span aria-hidden="true">▱</span><strong>${labels[checklistId()]}</strong></div><div><span aria-hidden="true">◷</span><strong>${time.valid ? formatLocal(time.iso) : "Missing"}</strong></div></div></div><p class="review-detail">${resultText}</p>${time.valid?nyTimeNote(checklistId(),time.iso):""}<p class="helper">${versionLabel(CHECKLIST_VERSION)}</p>${chartIllustration("review")}<div class="check-list" aria-label="Checks; tap a row to edit">${rows}</div><div class="action-stack"><button id="save-button" class="primary-button" type="button" data-action="save" ${saveBlocked ? "disabled" : ""}>${state.saving ? "Saving…" : "Save Entry"}</button><button class="text-button" type="button" data-action="edit-setup">Edit time or direction</button></div><p id="save-feedback" class="feedback" role="status"></p><details class="source-details"><summary>Source notes</summary><div class="source-links">${sources}</div></details>`);
+    `<div class="review-card ${resultClass}"><div class="review-result"><span class="review-icon" aria-hidden="true">${icon}</span><h2>${resultTitle}</h2></div><div class="review-summary"><div><span aria-hidden="true">▱</span><strong>${labels[checklistId()]}</strong></div><div><span aria-hidden="true">◷</span><strong>${time.valid ? formatLocal(time.iso) : "Missing"}</strong></div></div></div><p class="review-detail">${resultText}</p>${time.valid?nyTimeNote(checklistId(),time.iso):""}<p class="helper">${versionLabel(CHECKLIST_VERSION)} · ${state.direction==='long'?'Long':'Short'}</p><div class="liquidity-summary">${liquiditySummary(state.liquidity)}<button type="button" class="text-button" data-action="liquidity">Edit liquidity</button></div><p class="quality-summary">${result.resolved?qualityText(snapshotForReview()):'Checklist score pending · resolve every required check'}</p>${!liquidityValid?'<p class="notice">Select liquidity context or skip it before saving. <button type="button" class="text-button" data-action="liquidity">Edit liquidity</button></p>':''}${chartIllustration("review")}<div class="check-list" aria-label="Checks; tap a row to edit">${rows}</div><div class="action-stack"><button id="save-button" class="primary-button" type="button" data-action="save" ${saveBlocked ? "disabled" : ""}>${state.saving ? "Saving…" : "Save entry review"}</button><button class="text-button" type="button" data-action="edit-setup">Edit time or direction</button></div><p id="save-feedback" class="feedback" role="status"></p><details class="source-details"><summary>Source notes</summary><div class="source-links">${sources}</div></details>`);
   const feedback = $("save-feedback");
   if(state.saveMessage){feedback.textContent=state.saveMessage.text;feedback.className=`feedback ${state.saveMessage.kind}`;}
-  else if(state.apiStatus === "loading") feedback.textContent="Opening this browser’s test log…";
-  else if(state.apiStatus !== "ready") feedback.textContent="Browser log unavailable. Allow website storage and reload.";
+  else if(state.apiStatus === "loading") feedback.textContent="Connecting to the local entry log…";
+  else if(state.apiStatus !== "ready") feedback.textContent="Local entry log unavailable. Start the dashboard server to save.";
   else if(!result.resolved) feedback.textContent="Tap a Not sure check above to resolve it.";
-  else feedback.textContent="Only the checklist, entry time, and result are stored. No trade details.";
+  else feedback.textContent="Stores your original required answers and liquidity context. Record a trade outcome separately.";
 }
 function renderSaved(){
-  const entry = state.savedEntry;
-  layout(`<div class="saved-hero"><span class="saved-mark ${entry.checklist_met ? "" : "not-met"}" aria-hidden="true">${entry.checklist_met ? "✓" : "×"}</span><h1 tabindex="-1">Saved</h1></div>`,
-    `${entry.checklist_version===CHECKLIST_VERSION?chartIllustration("saved",null,entry):""}${nyTimeNote(entry.checklist_id,entry.entry_time_utc)}<p class="helper">${versionLabel(entry.checklist_version)}</p><div class="saved-card"><div><span aria-hidden="true">▱</span><strong>${labels[entry.checklist_id]}</strong></div><div><span aria-hidden="true">◷</span><strong>${formatLocal(entry.entry_time_utc)}</strong></div><div class="${entry.checklist_met ? "good" : "bad"}"><span aria-hidden="true">${entry.checklist_met ? "✓" : "×"}</span><strong>Checklist ${entry.checklist_met ? "Met" : "Not Met"}</strong></div></div><div class="action-stack"><button class="primary-button" type="button" data-action="new">Log Another Entry</button><button class="text-button" type="button" data-action="history">View history</button></div>`);
+  const entry=state.savedEntry;
+  layout(`<div class="saved-hero"><span class="saved-mark ${entry.checklist_met?'':'not-met'}" aria-hidden="true">${entry.checklist_met?'✓':'×'}</span><h1 tabindex="-1">Entry review saved</h1></div>`,
+    `${entrySummary(entry)}${validSnapshot(entry.entry_snapshot)?`<div class="liquidity-summary">${liquiditySummary(entry.entry_snapshot.liquidity)}</div>`:""}<p class="outcome-note">${outcomeLabel(entry.outcome)}</p><div class="action-stack"><button class="primary-button" type="button" data-action="saved-outcome">Record trade outcome</button><button class="secondary-button" type="button" data-action="history">View history</button><button class="text-button" type="button" data-action="new">New review</button></div>`);
 }
 function renderHistory(){
-  layout(`<h1 tabindex="-1">History</h1>`,
-    `${state.model || saveAttempts.size ? `<button class="secondary-button" type="button" data-action="resume">${saveAttempts.size?"Confirm pending save":"Resume review"}</button>` : ""}<div id="history-chart">${state.apiStatus==="ready" ? historyChart() : ""}</div><div id="history-content"></div><div class="history-actions"><button class="text-button" type="button" data-action="refresh">Refresh</button></div>`);
-  const content = $("history-content");
-  if(state.apiStatus === "loading"){content.className="empty-state";content.textContent="Loading entries…";return;}
-  if(state.apiStatus !== "ready"){content.className="empty-state";content.textContent="The browser test log is unavailable. Allow website storage and reload.";return;}
-  if(!state.entries.length){content.className="empty-state";content.textContent="No entries yet.";return;}
-  content.className="history-list";
-  for(const entry of state.entries){
-    const card = document.createElement("article");card.className="history-card";
-    const glyph = document.createElement("span");glyph.className="history-glyph";glyph.setAttribute("aria-hidden","true");glyph.textContent=glyphs[entry.checklist_id.startsWith("drill") ? "drill" : entry.checklist_id] || "▱";
-    const info = document.createElement("div");
-    const name = document.createElement("strong");name.textContent=labels[entry.checklist_id] || "Unknown checklist";
-    const time = document.createElement("time");time.dateTime=entry.entry_time_utc;time.textContent=formatLocal(entry.entry_time_utc);
-    info.append(name,time);
-    if(entry.checklist_id==='silver'){const ny=document.createElement('small');ny.textContent=`New York: ${formatNewYork(entry.entry_time_utc)}`;info.append(ny);}
-    const version=document.createElement('small');version.textContent=versionLabel(entry.checklist_version);info.append(version);
-    const result = document.createElement("span");result.className=`history-result ${entry.checklist_met ? "" : "not-met"}`;result.textContent=entry.checklist_met ? "MET" : "NOT MET";
-    card.append(glyph,info,result);content.append(card);
-  }
+  const ready=state.apiStatus==='ready';
+  const rows=ready?state.entries.map(entry=>`<button type="button" class="history-card" data-entry="${Number(entry.id)}"><span class="history-glyph" aria-hidden="true">${glyphs[String(entry.checklist_id).startsWith('drill')?'drill':entry.checklist_id]||'▱'}</span><span class="history-info"><strong>${escapeHTML(labels[entry.checklist_id]||'Unknown checklist')}</strong><time datetime="${escapeHTML(entry.entry_time_utc)}">${escapeHTML(formatLocal(entry.entry_time_utc))}</time><small>${qualityText(entry.entry_snapshot)}</small><span class="history-outcome">${outcomeLabel(entry.outcome)}</span></span><span class="history-result ${entry.checklist_met?'':'not-met'}">${entry.checklist_met?'MET':'NOT MET'}</span></button>`).join(''):'';
+  layout('<h1 tabindex="-1">History</h1>', `${state.draftActive || state.model || saveAttempts.size ? `<button class="secondary-button resume-button" type="button" data-action="resume">${saveAttempts.size?'Confirm pending save':'Resume review'}</button>`:''}${ready?renderScoreboard():''}<h2 class="history-heading">Recent reviews <span>Latest ${state.entries.length} · up to 50</span></h2>${!ready?`<p class="empty-state">${state.apiStatus==='loading'?'Loading entries…':'The local entry log is unavailable.'}</p>`:!state.entries.length?'<p class="empty-state">Your scoreboard starts with your first entry review.</p>':`<div class="history-list">${rows}</div>`}<div class="history-actions"><button class="text-button" type="button" data-action="refresh">Refresh</button></div>`);
+}
+function renderDetail(){
+  const entry=state.selectedEntry,snapshot=entry.entry_snapshot;
+  const answers=validSnapshot(snapshot)?`<h2 class="detail-heading">Original required answers</h2><ol class="original-answers">${snapshot.checks.map(check=>`<li><span>${escapeHTML(check.title)}${check.automatic?'<small>Automatic check</small>':''}</span><strong class="${check.answer==='yes'?'good':'bad'}">${check.answer==='yes'?'Yes':'No'}</strong></li>`).join('')}</ol>`:'<p class="notice">Detailed score unavailable. This earlier review retains its original checklist result.</p><p class="helper">Liquidity context and direction were not recorded.</p>';
+  layout(`${backRow('History','history',5)}<h1 tabindex="-1">Entry review</h1>`,`${state.outcomeSaved?'<p class="notice" role="status">Outcome saved. Your original checklist answers are unchanged.</p>':""}${entrySummary(entry)}${validSnapshot(snapshot)?`<div class="liquidity-summary">${liquiditySummary(snapshot.liquidity)}</div>`:''}${answers}<div class="outcome-panel"><h2>Trade outcome</h2><p>${outcomeLabel(entry.outcome)}</p>${entry.outcome_updated_at?`<p class="helper">Updated ${escapeHTML(formatLocal(entry.outcome_updated_at))}</p>`:''}<button type="button" class="secondary-button" data-action="edit-outcome">Record or edit outcome</button></div>`);
+}
+function renderOutcome(){
+  const entry=state.selectedEntry;
+  layout(`${backRow('Entry review','detail',5)}<h1 tabindex="-1">Did you take this trade?</h1>`,`${entrySummary(entry)}<p class="review-detail">Record the trade outcome for this review.</p><div class="outcome-choices" role="group" aria-label="Trade outcome">${Object.entries(outcomes).map(([value,label])=>`<button type="button" class="outcome-choice" data-outcome="${value}" aria-pressed="${state.outcomeSelection===value}">${label}</button>`).join('')}</div><div class="action-stack"><button type="button" class="primary-button" data-action="save-outcome">${state.saving?'Saving…':'Save outcome'}</button></div><p class="feedback ${state.outcomeMessage?'error':''}" role="status">${escapeHTML(state.outcomeMessage||'Original checklist answers stay as recorded at entry.')}</p>`);
 }
 function render(){
-  if(state.screen === "recovery" && saveAttempts.size) renderRecovery();
+  if(state.screen === "liquidity") renderLiquidity();
+  else if(state.screen === "detail" && state.selectedEntry) renderDetail();
+  else if(state.screen === "outcome" && state.selectedEntry) renderOutcome();
+  else if(state.screen === "recovery" && saveAttempts.size) renderRecovery();
   else if(state.screen === "setup" && state.model) renderSetup();
   else if(state.screen === "check" && state.model) renderQuestion();
   else if(state.screen === "review" && state.model) renderReview();
@@ -659,6 +799,7 @@ async function loadEntries(){
     if(sequence!==entryLoadSequence) return;
     if(!data || !Array.isArray(data.entries)) throw new Error("Unexpected response");
     state.entries=data.entries;
+    state.scoreboard=data.scoreboard || null;
     state.apiStatus="ready";
   }catch{
     if(sequence!==entryLoadSequence) return;
@@ -671,8 +812,8 @@ async function saveEntry(){
   if(state.saving) return;
   if(!saveAttempts.size){
     const result=reviewResult(),time=parsedEntryTime();
-    if(state.apiStatus!=="ready" || !result.resolved || !time.valid) return;
-    const body=JSON.stringify({checklist_id:checklistId(),entry_time_utc:time.iso,checklist_met:result.met,checklist_version:CHECKLIST_VERSION});
+    if(state.apiStatus!=="ready" || !result.resolved || !time.valid || !validLiquidity(canonicalLiquidity())) return;
+    const body=JSON.stringify({checklist_id:checklistId(),entry_time_utc:time.iso,checklist_met:result.met,checklist_version:CHECKLIST_VERSION,entry_snapshot:snapshotForReview()});
     saveAttempts.set(body,crypto.randomUUID());
   }
   const [body,requestKey]=saveAttempts.entries().next().value;
@@ -688,14 +829,15 @@ async function saveEntry(){
     if(!created || !Number.isInteger(created.id) || created.checklist_id!==submitted.checklist_id ||
        created.checklist_met!==submitted.checklist_met ||
        created.checklist_version!==(submitted.checklist_version || 'legacy') ||
-       Date.parse(created.entry_time_utc)!==Math.floor(Date.parse(submitted.entry_time_utc)/1000)*1000) throw new Error('Unexpected response');
+       Date.parse(created.entry_time_utc)!==Math.floor(Date.parse(submitted.entry_time_utc)/1000)*1000 ||
+       (submitted.entry_snapshot && !matchingSnapshot(submitted.entry_snapshot,created.entry_snapshot))) throw new Error('Unexpected response');
     state.savedEntry=created;saveAttempts.delete(body);state.saving=false;syncSavingControls();
     if(saveAttempts.size){persistDraft();show('recovery');}
     else{state.undoDraft=null;clearDraft();show('saved');}
     await loadEntries();
   }catch(error){
     state.saving=false;syncSavingControls();
-    state.saveMessage={kind:'error',text:[400,409].includes(error.status)?'This browser could not accept the saved review. Its request is retained. Keep this tab open and retry after resolving the storage issue.':'Save could not be confirmed. Retry this saved review; the same request will only be logged once.'};
+    state.saveMessage={kind:'error',text:[400,409].includes(error.status)?'The server could not accept this saved review. Its request is retained. Use a compatible app/server version before retrying.':'Save could not be confirmed. Retry this saved review; the same request will only be logged once.'};
     renderRecovery();
   }
 }
@@ -704,6 +846,12 @@ screen.addEventListener("click",event => {
   if(state.saving) return;
   const pendingAction=event.target.closest("[data-action]")?.dataset.action;
   if(saveAttempts.size && !['save','history','refresh','resume'].includes(pendingAction)){show('recovery');return;}
+  const liquidityOption=event.target.closest('[data-liquidity]');
+  if(liquidityOption){selectLiquidity(liquidityOption.dataset.liquidity,liquidityOption.dataset.type);return;}
+  const historyEntry=event.target.closest('[data-entry]');
+  if(historyEntry){const entry=state.entries.find(entry=>entry.id===Number(historyEntry.dataset.entry));if(entry){state.selectedEntry=entry;state.outcomeSaved=false;show('detail');}return;}
+  const outcome=event.target.closest('[data-outcome]');
+  if(outcome && Object.hasOwn(outcomes,outcome.dataset.outcome)){state.outcomeSelection=outcome.dataset.outcome;state.outcomeMessage=null;render();return;}
   const example=event.target.closest("[data-example]");
   if(example && state.screen==="check"){
     state.exampleMode=example.dataset.example;
@@ -727,7 +875,18 @@ screen.addEventListener("click",event => {
   if(edit){state.questionIndex=Number(edit.dataset.edit);show("check");return;}
   const action=event.target.closest("[data-action]")?.dataset.action;
   if(!action) return;
-  if(action==="home") show("home");
+  if(action==='liquidity'){state.liquidityReturn=state.screen==='review'?'review':'home';show('liquidity');}
+  else if(action==='liquidity-continue'){
+    state.liquidity.skipped=false;
+    const error=liquidityProblem(state.liquidity);state.liquidityError=error;
+    if(error) renderLiquidity();else show(state.liquidityReturn==='review' && state.model?'review':'home');
+  }
+  else if(action==='liquidity-skip'){state.liquidity.skipped=true;state.liquidityError='';show(state.liquidityReturn==='review' && state.model?'review':'home');}
+  else if(action==='saved-outcome'){state.selectedEntry=state.savedEntry;openOutcome();}
+  else if(action==='edit-outcome') openOutcome();
+  else if(action==='save-outcome') saveOutcome();
+  else if(action==='detail') show('detail');
+  else if(action==="home") show("home");
   else if(action==="choose-continue" && state.model) show("setup");
   else if(action==="now"){
     setNow();$("entry-date").value=state.dateValue;$("entry-clock").value=state.clockValue;updateSetupTime();persistDraft();
@@ -746,10 +905,15 @@ screen.addEventListener("click",event => {
 });
 screen.addEventListener("input",event => {
   if(state.saving || saveAttempts.size) return;
+  if(event.target.dataset?.liquidityLabel){
+    const field=event.target.dataset.liquidityLabel,type=event.target.dataset.type;
+    const reference=field==='swept'?state.liquidity.swept.find(item=>item.type===type):state.liquidity.target;
+    if(reference && reference.type===type){reference.label=event.target.value;state.liquidityError='';persistDraft();}
+    return;
+  }
   if(event.target.id==="entry-date" || event.target.id==="entry-clock"){
-    state.dateValue=$("entry-date").value;state.clockValue=$("entry-clock").value;
-    state.timeValue=state.dateValue && state.clockValue ? `${state.dateValue}T${state.clockValue}` : "";
-    state.saveMessage=null;updateSetupTime();persistDraft();
+    setEntryTime($("entry-date").value,$("entry-clock").value);
+    updateSetupTime();persistDraft();
   }
 });
 $("home-button").addEventListener("click",()=>show("home"));

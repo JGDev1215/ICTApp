@@ -62,5 +62,8 @@ There is no universal raid → displacement → FVG checklist across all five mo
 
 OTE's body-anchor calculation is the compiled-reference convention represented in this release, not a claim that every ICT OTE example uses identical anchoring. iFVG Scenario A/high-boundary/aggressive-entry paths require their own source-reviewed checklist before support is claimed. Long/Short iFVG diagrams mirror the general opposite-role gap concept and CE midpoint; they do not introduce mirrored Scenario A requirements.
 
+## Independent semantic fixtures
 
-This test site includes source summaries only. The underlying local study material is not published here. Entries are self-reported checklist observations, not automated market validation.
+Source fixtures use ordinary price observations, separate from the renderer's screen coordinates. Contract tests check source locator existence, expected Yes/No boundaries, current check coverage and the corresponding diagram observations. These are source-linked engineering fixtures reviewed during this local-source pass; they are not independently verified primary-video examples or historical market samples.
+
+This test site includes source summaries only. The underlying local study material is not published here. Entries are self-reported observations, not automated market validation.
