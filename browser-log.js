@@ -13,7 +13,7 @@
     ifvg:['ifvg-gap','ifvg-fail','ifvg-scenario','ifvg-return','ifvg-proof','ifvg-entry']
   };
   // Frozen ruleset: changing the UI's current version must not erase this one.
-  const RULESETS = {'2026-11-03.2':REQUIRED_CHECKS};
+  const RULESETS = {'2026-11-03.2':REQUIRED_CHECKS,'2026-11-03.3':{ifvg:REQUIRED_CHECKS.ifvg}};
   const TYPES = ['previous_day_high','previous_day_low','previous_week_high','previous_week_low','session_high','session_low','equal_highs','equal_lows','swing_high','swing_low','other'];
   const LABEL_REQUIRED = ['session_high','session_low','swing_high','swing_low','other'];
   const SWEEP_STATES = ['no_sweep','not_sure'];
@@ -25,6 +25,19 @@
   function bounded(value,max,empty=false){
     if(typeof value!=='string'||value.length>max||(!empty&&!value.trim())||/[\u0000-\u001f\u007f\ud800-\udfff]/u.test(value)) throw fail('Invalid text value');
     return value.trim();
+  }
+  function dealingRange(value){
+    if(!object(value)||!['skipped','not_sure','confirmed'].includes(value.status))throw fail('Invalid dealing range');
+    if(value.status!=='confirmed'){
+      if(!exact(value,['status']))throw fail('Invalid dealing range fields');
+      return {status:value.status};
+    }
+    if(!exact(value,['status','kind','session','label','timeframe','high','low'])||
+       !['session','custom'].includes(value.kind)||!['5-minute','15-minute','1-hour'].includes(value.timeframe))throw fail('Invalid dealing range context');
+    const label=bounded(value.label,60,value.kind==='session');
+    if(value.kind==='session' ? !['asia','london','new_york'].includes(value.session)||label!=='' : value.session!==null)throw fail('Invalid dealing range label or session');
+    if(typeof value.high!=='number'||!Number.isFinite(value.high)||typeof value.low!=='number'||!Number.isFinite(value.low)||value.high<=value.low)throw fail('Range high must exceed a finite low');
+    return {status:'confirmed',kind:value.kind,session:value.session,label,timeframe:value.timeframe,high:value.high,low:value.low};
   }
   function envelope(payload){
     if(!object(payload)||!['checklist_id','entry_time_utc','checklist_met'].every(k=>Object.hasOwn(payload,k))||Object.keys(payload).some(k=>!['checklist_id','entry_time_utc','checklist_met','checklist_version','entry_snapshot'].includes(k)))throw fail('Invalid entry fields');
@@ -40,12 +53,12 @@
     return result;
   }
   function snapshot(value,entry){
-    const rules=RULESETS[entry.checklist_version];
+    const rules=Object.hasOwn(RULESETS,entry.checklist_version)?RULESETS[entry.checklist_version]:null;
     if(!rules)throw fail('Unsupported snapshot checklist version');
-    if(!exact(value,['schema_version','direction','checks','liquidity'])||value.schema_version!==1||!['long','short'].includes(value.direction))throw fail('Invalid snapshot');
+    if(![1,2].includes(value?.schema_version)||!exact(value,value.schema_version===1?['schema_version','direction','checks','liquidity']:['schema_version','direction','checks','liquidity','dealing_range'])||!['long','short'].includes(value.direction))throw fail('Invalid snapshot');
     if(entry.checklist_id==='drill_wick'&&value.direction!=='short')throw fail('Long wick is not supported');
     const expected=rules[entry.checklist_id];
-    if(!Array.isArray(value.checks)||value.checks.length!==expected.length)throw fail('Snapshot must include every required check');
+    if(!expected||!Array.isArray(value.checks)||value.checks.length!==expected.length)throw fail('Snapshot must include every required check');
     const found=new Map();
     for(const check of value.checks){
       if(!exact(check,['id','title','answer','automatic'])||!expected.includes(check.id)||found.has(check.id)||!['yes','no'].includes(check.answer)||typeof check.automatic!=='boolean'||check.automatic!==(check.id==='sb-window'))throw fail('Invalid required answer');
@@ -71,10 +84,13 @@
     if(new Set(swept.map(ref=>ref.type)).size!==swept.length||swept.length>1&&swept.some(ref=>SWEEP_STATES.includes(ref.type)))throw fail('Conflicting swept references');
     const target=liq.target===null?null:reference(liq.target,true);
     if(!liq.skipped&&(!swept.length||!target))throw fail('Select liquidity or skip');
-    return {schema_version:1,direction:value.direction,checks,liquidity:{skipped:liq.skipped,swept:liq.skipped?[]:swept,target:liq.skipped?null:target}};
+    const normalized={schema_version:value.schema_version,direction:value.direction,checks,liquidity:{skipped:liq.skipped,swept:liq.skipped?[]:swept,target:liq.skipped?null:target}};
+    if(value.schema_version===2)normalized.dealing_range=dealingRange(value.dealing_range);
+    return normalized;
   }
   function validate(entry){
-    if(entry.checklist_version!=='legacy'&&!RULESETS[entry.checklist_version])throw fail('Unsupported checklist version');
+    if(entry.checklist_version!=='legacy'&&!Object.hasOwn(RULESETS,entry.checklist_version))throw fail('Unsupported checklist version');
+    if(entry.checklist_version==='2026-11-03.3'&&entry.checklist_id!=='ifvg')throw fail('Checklist is not supported by this version');
     return Object.hasOwn(entry,'entry_snapshot')?{...entry,entry_snapshot:snapshot(entry.entry_snapshot,entry)}:entry;
   }
   const publicEntry = row => ({id:row.id,checklist_id:row.checklist_id,checklist_version:row.checklist_version||'legacy',entry_time_utc:row.entry_time_utc,checklist_met:row.checklist_met,entry_snapshot:row.entry_snapshot??null,outcome:OUTCOMES.includes(row.outcome)?row.outcome:'not_recorded',outcome_updated_at:row.outcome_updated_at??null});
@@ -123,7 +139,7 @@
           const existing=event.target.result;
           if(existing){
             let submitted=incoming;
-            if(Object.hasOwn(incoming,'entry_snapshot')&&RULESETS[incoming.checklist_version])submitted=validate(incoming);
+            if(Object.hasOwn(incoming,'entry_snapshot')&&Object.hasOwn(RULESETS,incoming.checklist_version))submitted=validate(incoming);
             let previous;try{previous=envelope(JSON.parse(existing.fingerprint));}catch{previous=envelope(existing);}
             const core=x=>({checklist_id:x.checklist_id,checklist_version:x.checklist_version,entry_time_utc:x.entry_time_utc,checklist_met:x.checklist_met});
             const sameCore=stable(core(submitted))===stable(core(previous));

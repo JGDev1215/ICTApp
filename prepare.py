@@ -19,6 +19,13 @@ if count != 1:
 prepared, models = re.subn(r'sources:\[[^\n]*?\](?=\})', 'sources:[{label:"Checklist source notes",href:"SOURCE_MAP.md"}]', prepared)
 if models != 5:
     raise SystemExit("Expected exactly five model source lists")
+prepared, illustrative_link = re.subn(
+    r'(\{id:"ifvg",[^\n]*?)sources:\[\{label:"Checklist source notes",href:"SOURCE_MAP.md"\}\]',
+    lambda match: match.group(1) + 'sources:[{label:"Illustrative iFVG scope · v2026-11-03.3",href:"SOURCE_MAP_IFVG_2026-11-03.3.md"},{label:"Earlier source map · v2026-11-03.2",href:"SOURCE_MAP.md"}]',
+    prepared,
+)
+if illustrative_link != 1:
+    raise SystemExit("Expected exactly one illustrative iFVG source link")
 prepared = re.sub(r'^const (referenceHref|scopeHref|ep6Href|lecture8Href|lecture13Href) = .*;\n', '', prepared, flags=re.M)
 digest = hashlib.sha256(source.encode()).hexdigest()
 (HERE / "app.js").write_text('// Local UI SHA-256: ' + digest + '\n' + prepared)
@@ -30,4 +37,7 @@ html = html.replace('<main id="screen"', '<p class="test-notice">Browser test ·
 source_map = (SOURCE / "SOURCE_MAP.md").read_text()
 source_map = re.sub(r'\[([^\]]+)\]\((?:\.\./)[^)]*\)', r'\1', source_map)
 (HERE / "SOURCE_MAP.md").write_text(source_map + "\nThis test site includes source summaries only. The underlying local study material is not published here. Entries are self-reported observations, not automated market validation.\n")
+ifvg_map = (SOURCE / "SOURCE_MAP_IFVG_2026-11-03.3.md").read_text()
+ifvg_map = re.sub(r'\[([^\]]+)\]\((?:\.\./)[^)]*\)', r'\1', ifvg_map)
+(HERE / "SOURCE_MAP_IFVG_2026-11-03.3.md").write_text(ifvg_map + "\nThis test site includes source summaries only. The underlying local study material is not published here.\n")
 print('Prepared static UI; local app SHA-256:', digest)
