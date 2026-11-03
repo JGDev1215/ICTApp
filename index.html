@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
+  <title>ICT Entry Desk</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="browser-log.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <button id="home-button" class="brand-button" type="button" aria-label="Go to entry models"><span class="brand-symbol" aria-hidden="true">▱</span><span>ICT Entry Desk</span></button>
+      <button id="menu-button" class="header-button" type="button" aria-label="Open menu" aria-expanded="false">☰</button>
+      <nav id="header-menu" class="header-menu" aria-label="Main menu" hidden>
+        <button type="button" data-nav="home">Choose model</button>
+        <button type="button" data-nav="new">New entry</button>
+        <button type="button" data-nav="history">History</button>
+      </nav>
+    </header>
+    <p class="test-notice">Test version · Entries stay in this browser.<br>No sync. Clearing website data removes them.</p>
+    <main id="screen" class="screen"></main>
+    <nav class="bottom-nav" aria-label="Primary navigation">
+      <button id="nav-home" type="button" aria-label="Home" title="Home">⌂</button>
+      <button id="nav-new" class="nav-new" type="button" aria-label="New entry" title="New entry">+</button>
+      <button id="nav-history" type="button" aria-label="History" title="History">◷</button>
+    </nav>
+  </div>
+</body>
+</html>
