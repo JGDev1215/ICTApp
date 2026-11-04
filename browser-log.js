@@ -19,7 +19,10 @@
   const SWEEP_STATES = ['no_sweep','not_sure'];
   const OUTCOMES = ['not_recorded','not_taken','open','win','loss','break_even'];
   const DRAW_TYPES={buy:['previous_day_high','previous_week_high','session_high','equal_highs','swing_high'],sell:['previous_day_low','previous_week_low','session_low','equal_lows','swing_low']};
+  const INSTRUMENT_IDS=['NQ_continuous_provisional','ES_unavailable','CL_unavailable'];
   const DRAW_PRICE=/^-?(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{1,12})?$/;
+  const REQUEST_KEY=/^[A-Za-z0-9_-]{16,128}$/;
+  const SYNTHETIC_KEY=/^legacy_[a-f0-9]{64}$/;
   const fail = (message,status=400) => Object.assign(new Error(message),{status});
   const object = value => value!==null && typeof value==='object' && !Array.isArray(value);
   const exact = (value,keys) => object(value) && Object.keys(value).sort().join(',')===[...keys].sort().join(',');
@@ -41,7 +44,19 @@
     if(typeof value.high!=='number'||!Number.isFinite(value.high)||typeof value.low!=='number'||!Number.isFinite(value.low)||value.high<=value.low)throw fail('Range high must exceed a finite low');
     return {status:'confirmed',kind:value.kind,session:value.session,label,timeframe:value.timeframe,high:value.high,low:value.low};
   }
-  function liquidityDraws(value){
+  function decimalValue(price){
+    const negative=price.startsWith('-'),unsigned=negative?price.slice(1):price;
+    const [whole,fraction='']=unsigned.split('.');
+    const amount=BigInt(whole)*1000000000000n+BigInt(fraction.padEnd(12,'0'));
+    return negative?-amount:amount;
+  }
+  function comparableDrawPair(draws){
+    const buy=draws.buy,sell=draws.sell;
+    if(buy.type==='previous_day_high' && sell.type==='previous_day_low') return true;
+    if(buy.type==='previous_week_high' && sell.type==='previous_week_low') return true;
+    return buy.type==='session_high' && sell.type==='session_low' && buy.detail===sell.detail;
+  }
+  function liquidityDraws(value,strict=false){
     if(!exact(value,['buy','sell']))throw fail('Select both manual draws');
     const result={};
     for(const side of ['buy','sell']){
@@ -53,6 +68,8 @@
       if(!detail)throw fail('Invalid draw session or timeframe');
       result[side]={type:row.type,detail:row.detail,price:row.price};
     }
+    if(strict && comparableDrawPair(result) && decimalValue(result.buy.price)<=decimalValue(result.sell.price))
+      throw fail('Same-range high draw must exceed low draw');
     return result;
   }
   function envelope(payload){
@@ -68,10 +85,11 @@
     if(Object.hasOwn(payload,'entry_snapshot'))result.entry_snapshot=payload.entry_snapshot;
     return result;
   }
-  function snapshot(value,entry){
+  function snapshot(value,entry,strictDraws=false){
     const rules=Object.hasOwn(RULESETS,entry.checklist_version)?RULESETS[entry.checklist_version]:null;
     if(!rules)throw fail('Unsupported snapshot checklist version');
-    if(![1,2,4].includes(value?.schema_version)||!exact(value,value.schema_version===1?['schema_version','direction','checks','liquidity']:value.schema_version===2?['schema_version','direction','checks','liquidity','dealing_range']:['schema_version','direction','checks','liquidity','dealing_range','liquidity_draws'])||!['long','short'].includes(value.direction))throw fail('Invalid snapshot');
+    if(![1,2,4,5].includes(value?.schema_version)||!exact(value,value.schema_version===1?['schema_version','direction','checks','liquidity']:value.schema_version===2?['schema_version','direction','checks','liquidity','dealing_range']:value.schema_version===4?['schema_version','direction','checks','liquidity','dealing_range','liquidity_draws']:['schema_version','direction','checks','liquidity','dealing_range','liquidity_draws','instrument_id'])||!['long','short'].includes(value.direction))throw fail('Invalid snapshot');
+    if(value.schema_version===5&&!INSTRUMENT_IDS.includes(value.instrument_id))throw fail('Invalid instrument');
     if(entry.checklist_id==='drill_wick'&&value.direction!=='short')throw fail('Long wick is not supported');
     const expected=rules[entry.checklist_id];
     if(!expected||!Array.isArray(value.checks)||value.checks.length!==expected.length)throw fail('Snapshot must include every required check');
@@ -101,22 +119,58 @@
     const target=liq.target===null?null:reference(liq.target,true);
     if(!liq.skipped&&(!swept.length||!target))throw fail('Select liquidity or skip');
     const normalized={schema_version:value.schema_version,direction:value.direction,checks,liquidity:{skipped:liq.skipped,swept:liq.skipped?[]:swept,target:liq.skipped?null:target}};
-    if(value.schema_version===2||value.schema_version===4)normalized.dealing_range=dealingRange(value.dealing_range);
-    if(value.schema_version===4)normalized.liquidity_draws=liquidityDraws(value.liquidity_draws);
+    if(value.schema_version>=2)normalized.dealing_range=dealingRange(value.dealing_range);
+    if(value.schema_version>=4)normalized.liquidity_draws=liquidityDraws(value.liquidity_draws,strictDraws);
+    if(value.schema_version===5){
+      if(strictDraws&&value.instrument_id!=='CL_unavailable'&&['buy','sell'].some(side=>decimalValue(normalized.liquidity_draws[side].price)<=0n))throw fail('NQ and ES draw prices must be greater than zero');
+      normalized.instrument_id=value.instrument_id;
+    }
     return normalized;
   }
-  function validate(entry){
+  function validate(entry,strictDraws=false){
     if(entry.checklist_version!=='legacy'&&!Object.hasOwn(RULESETS,entry.checklist_version))throw fail('Unsupported checklist version');
     if(entry.checklist_version==='2026-11-03.3'&&entry.checklist_id!=='ifvg')throw fail('Checklist is not supported by this version');
-    return Object.hasOwn(entry,'entry_snapshot')?{...entry,entry_snapshot:snapshot(entry.entry_snapshot,entry)}:entry;
+    return Object.hasOwn(entry,'entry_snapshot')?{...entry,entry_snapshot:snapshot(entry.entry_snapshot,entry,strictDraws)}:entry;
   }
-  const publicEntry = row => ({id:row.id,checklist_id:row.checklist_id,checklist_version:row.checklist_version||'legacy',entry_time_utc:row.entry_time_utc,checklist_met:row.checklist_met,entry_snapshot:row.entry_snapshot??null,outcome:OUTCOMES.includes(row.outcome)?row.outcome:'not_recorded',outcome_updated_at:row.outcome_updated_at??null});
+  function opaqueSnapshot(value){
+    if(!object(value))throw fail('Invalid backup snapshot');
+    const stack=[{value,depth:0}];let nodes=0;
+    while(stack.length){
+      const item=stack.pop();
+      if(++nodes>2048||item.depth>24)throw fail('Invalid backup snapshot');
+      if(item.value&&typeof item.value==='object'){
+        for(const child of Object.values(item.value))stack.push({value:child,depth:item.depth+1});
+      }
+    }
+    let serialized;
+    try{serialized=JSON.stringify(value);}catch{throw fail('Invalid backup snapshot');}
+    if(typeof serialized!=='string'||new TextEncoder().encode(serialized).byteLength>16384)throw fail('Backup snapshot exceeds size limit');
+    return JSON.parse(serialized);
+  }
+  function validateBackupEntry(source){
+    const entry=envelope(source);
+    if(Object.hasOwn(RULESETS,entry.checklist_version)||entry.checklist_version==='legacy'&&!Object.hasOwn(entry,'entry_snapshot'))return validate(entry,entry.entry_snapshot?.schema_version===5);
+    if(Object.hasOwn(entry,'entry_snapshot'))entry.entry_snapshot=opaqueSnapshot(entry.entry_snapshot);
+    return entry;
+  }
+  const publicEntry = row => ({id:row.id,checklist_id:row.checklist_id,checklist_version:row.checklist_version||'legacy',entry_time_utc:row.entry_time_utc,checklist_met:row.checklist_met,entry_snapshot:Object.hasOwn(RULESETS,row.checklist_version)?row.entry_snapshot??null:null,outcome:OUTCOMES.includes(row.outcome)?row.outcome:'not_recorded',outcome_updated_at:row.outcome_updated_at??null});
+  const backupEntry = row => ({...publicEntry(row),entry_snapshot:row.entry_snapshot??null});
+  function sameImmutable(a,b){
+    const left=backupEntry(a),right=backupEntry(b);
+    return ['checklist_id','checklist_version','entry_time_utc','checklist_met','entry_snapshot'].every(field=>stable(left[field])===stable(right[field]));
+  }
+  async function syntheticKey(entry){
+    const identity={id:entry.id,checklist_id:entry.checklist_id,checklist_version:entry.checklist_version,entry_time_utc:entry.entry_time_utc,checklist_met:entry.checklist_met,entry_snapshot:entry.entry_snapshot};
+    const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(stable(identity)));
+    return 'legacy_'+[...new Uint8Array(digest)].map(byte=>byte.toString(16).padStart(2,'0')).join('');
+  }
   function scoreboard(rows){
     let scored=0,quality=0,full=0,wins=0,losses=0,breakEven=0;
     for(const row of rows){
       if(row.outcome==='win')wins++;if(row.outcome==='loss')losses++;if(row.outcome==='break_even')breakEven++;
-      const checks=row.entry_snapshot?.checks;
-      if(Array.isArray(checks)&&checks.length&&checks.every(c=>c&&['yes','no'].includes(c.answer))){const yes=checks.filter(c=>c.answer==='yes').length;scored++;quality+=100*yes/checks.length;if(yes===checks.length)full++;}
+      const required=Object.hasOwn(RULESETS,row.checklist_version)?RULESETS[row.checklist_version][row.checklist_id]:null;
+      const checks=required?row.entry_snapshot?.checks:null;
+      if(Array.isArray(checks)&&checks.length===required.length&&checks.every(c=>c&&['yes','no'].includes(c.answer))){const yes=checks.filter(c=>c.answer==='yes').length;scored++;quality+=100*yes/checks.length;if(yes===checks.length)full++;}
     }
     const closed=wins+losses+breakEven;
     return {total_reviews:rows.length,scored_reviews:scored,unavailable_reviews:rows.length-scored,win_points:wins,wins,losses,break_even:breakEven,closed_trades:closed,win_rate:closed?100*wins/closed:null,average_checklist_quality:scored?quality/scored:null,full_checklist_rate:scored?100*full/scored:null,full_checklist_reviews:full};
@@ -142,7 +196,7 @@
       if(typeof options.body!=='string'||new TextEncoder().encode(options.body).byteLength>16384)throw fail('Request too large',413);
       try{payload=JSON.parse(options.body);}catch{throw fail('Invalid JSON');}
       if(match){if(!exact(payload,['outcome'])||!OUTCOMES.includes(payload.outcome)||!Number.isSafeInteger(Number(match[1])))throw fail('Invalid trade outcome');}
-      else{key=options.headers?.['Idempotency-Key'];if(typeof key!=='string'||!/^[A-Za-z0-9_-]{16,128}$/.test(key))throw fail('Invalid request key');incoming=envelope(payload);}
+      else{key=options.headers?.['Idempotency-Key'];if(typeof key!=='string'||!REQUEST_KEY.test(key))throw fail('Invalid request key');incoming=envelope(payload);}
     }
     const db=await open();
     try{return await new Promise((resolve,reject)=>{
@@ -164,7 +218,7 @@
             if(!sameCore||!sameSnapshot)throw fail('Request key already used with different contents',409);
             result=publicEntry(existing);return;
           }
-          const entry=validate(incoming),row={...entry,requestKey:key,fingerprint:JSON.stringify(entry),outcome:'not_recorded',outcome_updated_at:null};
+          const entry=validate(incoming,true),row={...entry,requestKey:key,fingerprint:JSON.stringify(entry),outcome:'not_recorded',outcome_updated_at:null};
           store.add(row).onsuccess=added=>{result=publicEntry({...row,id:added.target.result});};
         }catch(error){abort(error);}
       };
@@ -175,40 +229,54 @@
   window.entryBrowserBackup=async function(action,backup){
     if(action==='export'){
       const db=await open();
-      try{return await new Promise((resolve,reject)=>{
+      try{const rows=await new Promise((resolve,reject)=>{
         const tx=db.transaction('entries','readonly');let rows=[];
         tx.objectStore('entries').getAll().onsuccess=event=>{rows=event.target.result;};
-        tx.oncomplete=()=>resolve({format:'ict-entry-desk-browser-backup-v1',exported_at:new Date().toISOString(),entries:rows.map(row=>({request_key:row.requestKey,entry:publicEntry(row)}))});
+        tx.oncomplete=()=>resolve(rows);
         tx.onabort=()=>reject(tx.error||new Error('Backup export failed'));
-      });}finally{db.close();}
+      });
+      const entries=await Promise.all(rows.map(async row=>{
+        const entry=backupEntry(row);
+        return {request_key:typeof row.requestKey==='string'&&REQUEST_KEY.test(row.requestKey)?row.requestKey:await syntheticKey(entry),entry};
+      }));
+      return {format:'ict-entry-desk-browser-backup-v1',exported_at:new Date().toISOString(),entries};
+      }finally{db.close();}
     }
     if(action!=='import'||!exact(backup,['format','exported_at','entries'])||backup.format!=='ict-entry-desk-browser-backup-v1'||
        typeof backup.exported_at!=='string'||!Array.isArray(backup.entries)||backup.entries.length>100000)throw fail('Invalid backup file');
-    const prepared=backup.entries.map(item=>{
-      if(!exact(item,['request_key','entry'])||typeof item.request_key!=='string'||!/^[A-Za-z0-9_-]{16,128}$/.test(item.request_key))throw fail('Invalid backup request key');
+    const prepared=await Promise.all(backup.entries.map(async item=>{
+      if(!exact(item,['request_key','entry'])&&!exact(item,['entry']))throw fail('Invalid backup request key');
       const row=item.entry;
       if(!exact(row,['id','checklist_id','checklist_version','entry_time_utc','checklist_met','entry_snapshot','outcome','outcome_updated_at'])||
          !Number.isSafeInteger(row.id)||row.id<1||!OUTCOMES.includes(row.outcome)||
          !(row.outcome_updated_at===null||typeof row.outcome_updated_at==='string'&&Number.isFinite(Date.parse(row.outcome_updated_at))))throw fail('Invalid backup entry');
       const source={checklist_id:row.checklist_id,checklist_version:row.checklist_version,entry_time_utc:row.entry_time_utc,checklist_met:row.checklist_met};
       if(row.entry_snapshot!==null)source.entry_snapshot=row.entry_snapshot;
-      const entry=validate(envelope(source));
-      return {requestKey:item.request_key,fingerprint:JSON.stringify(entry),...entry,outcome:row.outcome,outcome_updated_at:row.outcome_updated_at};
-    });
-    if(new Set(prepared.map(row=>row.requestKey)).size!==prepared.length)throw fail('Duplicate backup request key');
+      const entry=validateBackupEntry(source);
+      const key=Object.hasOwn(item,'request_key')?item.request_key:await syntheticKey(row);
+      if(typeof key!=='string'||!REQUEST_KEY.test(key))throw fail('Invalid backup request key');
+      const synthetic=SYNTHETIC_KEY.test(key)&&key===await syntheticKey(row);
+      return {sourceId:row.id,synthetic,record:{requestKey:key,fingerprint:JSON.stringify(entry),...entry,outcome:row.outcome,outcome_updated_at:row.outcome_updated_at}};
+    }));
+    if(new Set(prepared.map(item=>item.record.requestKey)).size!==prepared.length)throw fail('Duplicate backup request key');
     const db=await open();
     try{return await new Promise((resolve,reject)=>{
       const tx=db.transaction('entries','readwrite'),store=tx.objectStore('entries'),index=store.index('requestKey');let added=0,skipped=0,failure;
       const abort=error=>{failure=error;tx.abort();};
       tx.oncomplete=()=>resolve({added,skipped});
       tx.onabort=()=>reject(failure||tx.error||new Error('Backup import failed'));
-      for(const row of prepared)index.get(row.requestKey).onsuccess=event=>{
+      for(const item of prepared)index.get(item.record.requestKey).onsuccess=event=>{
         const old=event.target.result;
         if(old){
-          const fields=['checklist_id','checklist_version','entry_time_utc','checklist_met','entry_snapshot'];
-          if(fields.some(field=>stable(old[field]??null)!==stable(row[field]??null))){abort(fail('Backup conflicts with an existing entry'));return;}
+          if(!sameImmutable(old,item.record)){abort(fail('Backup conflicts with an existing entry'));return;}
           skipped++;
-        }else{store.add(row);added++;}
+        }else if(item.synthetic){
+          store.get(item.sourceId).onsuccess=found=>{
+            const source=found.target.result;
+            if(source&&(!source.requestKey||!REQUEST_KEY.test(source.requestKey))&&sameImmutable(source,item.record)){skipped++;return;}
+            store.add(item.record);added++;
+          };
+        }else{store.add(item.record);added++;}
       };
     });}finally{db.close();}
   };
