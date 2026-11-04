@@ -1,4 +1,4 @@
-// Local UI SHA-256: 95b66b5baf3e5ea333672d4d4030a3e6bb7e6289f620fa950f4389dc98a66b9c
+// Local UI SHA-256: 8af8eb7640879f3ceb770951967128fc30da5f9175c958010988a35ef1515fa4
 "use strict";
 const fetch=()=>Promise.reject(new Error("Network access disabled in static app"));
 
@@ -15,6 +15,7 @@ const CHECKLIST_VERSION = "2026-11-03.2";
 const IFVG_ILLUSTRATIVE_VERSION = "2026-11-03.3";
 function checklistVersionFor(model){return model==='ifvg'?IFVG_ILLUSTRATIVE_VERSION:CHECKLIST_VERSION;}
 const state = {exampleMode:"valid",screen:"entry", returnScreen:"entry", draftActive:true, marketInstrument:"", marketDateNY:"", marketCutoffUTC:"", marketMessage:"", marketContextIds:[],marketTargetId:null,manualTargetDraft:null,marketRangeIds:null,marketContextError:"", hiddenContextReviewed:false, legacyRecovery:false, liquidity:{skipped:false,swept:[],target:null}, liquidityDraws:{buy:{type:'',detail:'',price:''},sell:{type:'',detail:'',price:''}}, dealingRange:{status:"skipped"}, rangeError:"", liquidityError:"", liquidityReturn:"home", liquidityOpen:null, entryTimeUtc:null, inputTimeZone:null, scoreboard:null, selectedEntry:null, outcomeSelection:"not_recorded", outcomeMessage:null, outcomeSaved:false, model:null, direction:"long", variant:"fvg", answers:{}, timeValue:"", dateValue:"", clockValue:"", questionIndex:0, entries:[], apiStatus:"loading", saving:false, saveMessage:null, savedEntry:null, undoDraft:null, storageAvailable:true};
+state.rejectedSave=null;
 const HistoricalSnapshotClientType=typeof window!=='undefined' ? window.HistoricalSnapshotClient : null;
 let phase2Client=typeof HistoricalSnapshotClientType==='function' ? new HistoricalSnapshotClientType((...args)=>fetch(...args)) : null;
 let entryMarketLoadSequence=0;
@@ -96,14 +97,39 @@ function validDraws(value){
     return row.detail==='';
   });
 }
+function comparableDrawPair(draws){
+  const buy=draws.buy,sell=draws.sell;
+  if(buy.type==='previous_day_high' && sell.type==='previous_day_low') return true;
+  if(buy.type==='previous_week_high' && sell.type==='previous_week_low') return true;
+  return buy.type==='session_high' && sell.type==='session_low' && buy.detail===sell.detail;
+}
+function decimalValue(price){
+  const negative=price.startsWith('-'),unsigned=negative?price.slice(1):price;
+  const [whole,fraction='']=unsigned.split('.');
+  const amount=BigInt(whole)*1000000000000n+BigInt(fraction.padEnd(12,'0'));
+  return negative?-amount:amount;
+}
+function drawInputProblem(draws,instrument=state.marketInstrument){
+  if(!['NQ_continuous_provisional','ES_unavailable','CL_unavailable'].includes(instrument)) return 'Choose NQ, ES, or CL before continuing.';
+  if(!validDraws(draws)) return 'Select both draw types, their required detail, and valid numeric prices.';
+  if(['NQ_continuous_provisional','ES_unavailable'].includes(instrument) &&
+     ['buy','sell'].some(side=>decimalValue(draws[side].price)<=0n))
+    return 'NQ and ES draw prices must be greater than zero.';
+  if(comparableDrawPair(draws) && decimalValue(draws.buy.price)<=decimalValue(draws.sell.price))
+    return 'For the same day, week, or session, the high draw price must exceed the low draw price.';
+  return '';
+}
+function validCurrentDraws(){return !drawInputProblem(state.liquidityDraws);}
 const outcomes={not_recorded:'Not recorded',not_taken:'Not taken',open:'Open',win:'Win',loss:'Loss',break_even:'Break-even'};
 function escapeHTML(value){return String(value??'').replace(/[&<>"']/g,character=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));}
 function currentNYDate(instant=new Date()){const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(instant).map(item=>[item.type,item.value]));return `${parts.year}-${parts.month}-${parts.day}`;}
+const invalidFreeText=/[\u0000-\u001f\u007f\ud800-\udfff]/u;
+function invalidLiquidityLabel(value){return [...value.swept,value.target].some(item=>item && invalidFreeText.test(item.label));}
 function validLiquidity(value,draft=false){
   if(!value || typeof value!=='object' || typeof value.skipped!=='boolean' || !Array.isArray(value.swept) || value.swept.length>13) return false;
   const reference=(item,target)=>item && typeof item==='object' && Object.hasOwn(liquidityTypes,item.type) &&
     (target?!exclusiveSweeps.has(item.type):item.type!=='not_decided') && typeof item.label==='string' && item.label.length<=160 &&
-    (draft || item.label.trim().length>0);
+    (draft || (item.label.trim().length>0 && !invalidFreeText.test(item.label)));
   if(!value.swept.every(item=>reference(item,false)) || new Set(value.swept.map(item=>item.type)).size!==value.swept.length ||
      (value.swept.some(item=>exclusiveSweeps.has(item.type)) && value.swept.length!==1) ||
      !(value.target===null || reference(value.target,true))) return false;
@@ -197,12 +223,14 @@ function validStoredMarketContext(value){
       row.price!==null && row.window_status==='observed_ended_unverified'));
 }
 function validSnapshot(snapshot){
-  return snapshot && [1,2,3,4].includes(snapshot.schema_version) && ['long','short'].includes(snapshot.direction) &&
+  return snapshot && [1,2,3,4,5].includes(snapshot.schema_version) && ['long','short'].includes(snapshot.direction) &&
+    (snapshot.schema_version===5 ? ['NQ_continuous_provisional','ES_unavailable','CL_unavailable'].includes(snapshot.instrument_id) : !Object.hasOwn(snapshot,'instrument_id')) &&
     Array.isArray(snapshot.checks) && snapshot.checks.length>0 && snapshot.checks.length<=50 &&
     snapshot.checks.every(check=>check && typeof check.id==='string' && check.id.length>0 && check.id.length<=100 &&
       typeof check.title==='string' && check.title.length>0 && check.title.length<=300 && ['yes','no'].includes(check.answer) && typeof check.automatic==='boolean') &&
     new Set(snapshot.checks.map(check=>check.id)).size===snapshot.checks.length && validLiquidity(snapshot.liquidity) &&
-    (snapshot.schema_version===4 ? validDraws(snapshot.liquidity_draws) : !Object.hasOwn(snapshot,'liquidity_draws')) &&
+    (snapshot.schema_version===5 ? !drawInputProblem(snapshot.liquidity_draws,snapshot.instrument_id) :
+      snapshot.schema_version===4 ? validDraws(snapshot.liquidity_draws) : !Object.hasOwn(snapshot,'liquidity_draws')) &&
     (snapshot.schema_version===1 ? !Object.hasOwn(snapshot,'dealing_range') :
       validRange(snapshot.dealing_range,snapshot.schema_version===3)) &&
     (snapshot.schema_version!==3 ||
@@ -240,8 +268,9 @@ function matchingSnapshot(expected,actual){
        JSON.stringify(stored.selected_range?.reference_ids)===JSON.stringify(request.range_reference_ids) :
        stored.contract_version==='phase2-market-context-v1');
   })();
-  const sameDraws=expected.schema_version!==4 || ['buy','sell'].every(side=>['type','detail','price'].every(key=>expected.liquidity_draws[side][key]===actual.liquidity_draws[side][key]));
+  const sameDraws=![4,5].includes(expected.schema_version) || ['buy','sell'].every(side=>['type','detail','price'].every(key=>expected.liquidity_draws[side][key]===actual.liquidity_draws[side][key]));
   return expected.schema_version===actual.schema_version && sameRange && marketMatches && sameDraws &&
+    (expected.schema_version!==5 || expected.instrument_id===actual.instrument_id) &&
     a.skipped===b.skipped && a.swept.length===b.swept.length && a.swept.every((item,index)=>sameReference(item,b.swept[index])) && sameReference(a.target,b.target);
 }
 function marketSelectionRequest(){
@@ -275,18 +304,20 @@ function restoreManualRange(){
   state.manualRangeDraft=null;
 }
 function snapshotForReview(includeMarket=true){
-  const base={schema_version:phase2PersistentLocal&&!state.legacyRecovery?4:2,direction:state.direction,checks:requiredChecks().map(entry=>({id:entry.id,title:entry.title,answer:answerFor(entry),automatic:Boolean(entry.auto)})),liquidity:canonicalLiquidity(),dealing_range:state.dealingRange};
-  if(base.schema_version===4) base.liquidity_draws=JSON.parse(JSON.stringify(state.liquidityDraws));
+  const base={schema_version:phase2PersistentLocal&&!state.legacyRecovery?(phase2PreviewEnabled?4:5):2,direction:state.direction,checks:requiredChecks().map(entry=>({id:entry.id,title:entry.title,answer:answerFor(entry),automatic:Boolean(entry.auto)})),liquidity:canonicalLiquidity(),dealing_range:state.dealingRange};
+  if([4,5].includes(base.schema_version))base.liquidity_draws=JSON.parse(JSON.stringify(state.liquidityDraws));
+  if(base.schema_version===5)base.instrument_id=state.marketInstrument;
   if(!includeMarket || !phase2PreviewEnabled || (!state.marketContextIds.length && !state.marketRangeIds)) return base;
   const request=marketSelectionRequest();
   if(!request) throw new Error('Reload and reselect historical context before saving.');
-  const {liquidity_draws,...legacyBase}=base;
+  const {liquidity_draws,instrument_id,...legacyBase}=base;
   return {...legacyBase,schema_version:3,market_context_request:request};
 }
 function liquidityProblem(value){
   if(!value.swept.length) return requiresDraws()?'Select swept liquidity, No sweep observed, or Not sure.':'Select swept liquidity, No sweep observed, or Not sure. You can also skip this page.';
   if(!value.target) return requiresDraws()?'Select one target, or Not decided.':'Select one target, or Not decided. You can also skip this page.';
   if([...value.swept,value.target].some(item=>!item.label.trim())) return 'Add an identifying label for every selected session, swing, or Other reference.';
+  if(invalidLiquidityLabel(value)) return 'Remove control characters from liquidity labels before continuing.';
   return '';
 }
 function liquiditySummary(value){
@@ -766,7 +797,7 @@ function renderLiquidity(){
   }).join('');
   const sweptChoices=`<div class="swept-liquidity-columns"><div class="swept-liquidity-column" role="group" aria-label="Buy-side swept liquidity"><h3>Buy-side · highs</h3><div class="liquidity-options">${choices('swept',buySideSweeps)}</div></div><div class="swept-liquidity-column" role="group" aria-label="Sell-side swept liquidity"><h3>Sell-side · lows</h3><div class="liquidity-options">${choices('swept',sellSideSweeps)}</div></div></div><div class="liquidity-options swept-liquidity-neutral" role="group" aria-label="Other swept observations">${choices('swept',neutralSweeps)}</div>`;
   const returnToReview=state.liquidityReturn==='review' && state.model;
-  layout(`<p class="eyebrow">Entry review · ${requiresDraws()?'Manual liquidity':'Optional context'}</p><h1 tabindex="-1">Liquidity</h1><p class="review-detail">Record the liquidity you observed and your intended draw.</p>`,`<button type="button" class="text-button" data-action="entry">← Entry context</button>${requiresDraws()?'':'<button type="button" class="secondary-button" data-action="liquidity-skip">Skip for now</button>'}${state.liquidity.skipped && (state.liquidity.swept.length || state.liquidity.target)?'<button type="button" class="text-button" data-action="liquidity-restore">Use previous liquidity selections</button>':''}<details class="liquidity-section" ${state.liquidityOpen==='swept'?'open':''}><summary>What liquidity was swept?</summary><p class="helper">Select all that apply. No sweep and Not sure are exclusive.</p>${sweptChoices}</details><details class="liquidity-section" ${state.liquidityOpen==='target'?'open':''}><summary>What is your target liquidity?</summary><p class="helper">${phase2PersistentLocal?'Choose one primary target.':'Choose one primary target. A historical intended draw is provisional; choosing a manual target switches back without losing the earlier manual draft.'}</p>${state.marketTargetId?`<p class="historical-warning">Historical intended draw active · ${escapeHTML(state.liquidity.target?.label||'')}. Your previous manual target is preserved in this draft.</p><button type="button" class="secondary-button" data-action="target-manual">Return to manual target</button>`:''}<div class="liquidity-options" role="group" aria-label="Target liquidity">${choices('target')}</div></details>${drawRowsMarkup()}${phase2PersistentLocal?'':automaticPreviousMarkup()+automaticSessionMarkup()}<div class="liquidity-summary">${liquiditySummary(state.liquidity)}</div>${phase2PersistentLocal && !state.legacyRecovery?'':rangeForm()+sharedSnapshotMarkup()}<p class="helper">This context has no scoring effect. All required model checks still apply.</p><p id="liquidity-error" class="feedback error" role="alert">${escapeHTML(state.liquidityError)}</p><div class="action-stack"><button type="button" class="primary-button" data-action="liquidity-continue" ${requiresDraws()&&!validDraws(state.liquidityDraws)?'disabled':''}>${returnToReview?'Return to review':'Continue to models'} →</button></div>`);
+  layout(`<p class="eyebrow">Entry review · ${requiresDraws()?'Manual liquidity':'Optional context'}</p><h1 tabindex="-1">Liquidity</h1><p class="review-detail">Record the liquidity you observed and your intended draw.</p>`,`<button type="button" class="text-button" data-action="entry">← Entry context</button>${requiresDraws()?'':'<button type="button" class="secondary-button" data-action="liquidity-skip">Skip for now</button>'}${state.liquidity.skipped && (state.liquidity.swept.length || state.liquidity.target)?'<button type="button" class="text-button" data-action="liquidity-restore">Use previous liquidity selections</button>':''}<details class="liquidity-section" ${state.liquidityOpen==='swept'?'open':''}><summary>What liquidity was swept?</summary><p class="helper">Select all that apply. No sweep and Not sure are exclusive.</p>${sweptChoices}</details><details class="liquidity-section" ${state.liquidityOpen==='target'?'open':''}><summary>What is your target liquidity?</summary><p class="helper">${phase2PersistentLocal?'Choose one primary target.':'Choose one primary target. A historical intended draw is provisional; choosing a manual target switches back without losing the earlier manual draft.'}</p>${state.marketTargetId?`<p class="historical-warning">Historical intended draw active · ${escapeHTML(state.liquidity.target?.label||'')}. Your previous manual target is preserved in this draft.</p><button type="button" class="secondary-button" data-action="target-manual">Return to manual target</button>`:''}<div class="liquidity-options" role="group" aria-label="Target liquidity">${choices('target')}</div></details>${drawRowsMarkup()}${phase2PersistentLocal?'':automaticPreviousMarkup()+automaticSessionMarkup()}<div class="liquidity-summary">${liquiditySummary(state.liquidity)}</div>${phase2PersistentLocal && !state.legacyRecovery?'':rangeForm()+sharedSnapshotMarkup()}<p class="helper">This context has no scoring effect. All required model checks still apply.</p><p id="liquidity-error" class="feedback error" role="alert">${escapeHTML(state.liquidityError)}</p><div class="action-stack"><button type="button" class="primary-button" data-action="liquidity-continue" ${requiresDraws()&&!validCurrentDraws()?'disabled':''}>${returnToReview?'Return to review':'Continue to models'} →</button></div>`);
 }
 function selectLiquidity(field,type){
   if(!['swept','target'].includes(field) || !Object.hasOwn(liquidityTypes,type)) return;
@@ -788,6 +819,9 @@ function qualityText(snapshot){
   return `${yes}/${total} · ${Math.round(yes/total*100)}% checklist`;
 }
 function outcomeLabel(outcome){return outcome==='not_recorded' || !Object.hasOwn(outcomes,outcome)?'Trade outcome not recorded':outcomes[outcome];}
+function instrumentText(snapshot){
+  return snapshot?.schema_version===5 ? ({NQ_continuous_provisional:'NQ',ES_unavailable:'ES',CL_unavailable:'CL'}[snapshot.instrument_id]||'Instrument not recorded') : 'Instrument not recorded';
+}
 function modelScopeNote(id){
   const notes={
     ifvg:'Illustrative iFVG review. Met means the listed self-reported checks were affirmed; it does not certify a complete ICT setup or a source-validated CE threshold.',
@@ -801,7 +835,7 @@ function modelScopeHistoryNote(id){
 }
 function entrySummary(entry){
   const snapshot=entry.entry_snapshot;
-  return `<div class="saved-card"><strong>${escapeHTML(labels[entry.checklist_id]||'Unknown checklist')}</strong><span>${escapeHTML(formatLocal(entry.entry_time_utc))}</span><span class="${entry.checklist_met?'good':'bad'}">Checklist ${entry.checklist_met?'Met':'Not met'}</span><span class="quality-summary">${qualityText(snapshot)}</span><small>${escapeHTML(versionLabel(entry.checklist_version))}${validSnapshot(snapshot)?` · ${snapshot.direction==='long'?'Long':'Short'}`:''}</small></div>${modelScopeNote(entry.checklist_id)}${nyTimeNote(entry.checklist_id,entry.entry_time_utc)}`;
+  return `<div class="saved-card"><strong>${escapeHTML(labels[entry.checklist_id]||'Unknown checklist')}</strong><span>${escapeHTML(formatLocal(entry.entry_time_utc))}</span><span>Instrument: ${escapeHTML(instrumentText(snapshot))}</span><span class="${entry.checklist_met?'good':'bad'}">Checklist ${entry.checklist_met?'Met':'Not met'}</span><span class="quality-summary">${qualityText(snapshot)}</span><small>${escapeHTML(versionLabel(entry.checklist_version))}${validSnapshot(snapshot)?` · ${snapshot.direction==='long'?'Long':'Short'}`:''}</small></div>${modelScopeNote(entry.checklist_id)}${nyTimeNote(entry.checklist_id,entry.entry_time_utc)}`;
 }
 function renderScoreboard(){
   const score=state.scoreboard;
@@ -840,7 +874,7 @@ function persistDraft(){
   try{
     if(!state.draftActive && !state.model && !saveAttempts.size && !state.undoDraft) sessionStorage.removeItem(draftStorageKey);
     else sessionStorage.setItem(draftStorageKey,JSON.stringify({...draftSnapshot(),draftVersion:4,
-      saveAttempts:[...saveAttempts],undoDraft:state.undoDraft}));
+      saveAttempts:[...saveAttempts],rejectedSave:state.rejectedSave,undoDraft:state.undoDraft}));
     state.storageAvailable=true;updateDraftStatus();return true;
   }catch{state.storageAvailable=false;updateDraftStatus();return false;}
 }
@@ -856,6 +890,7 @@ function applyDraft(draft){
   state.marketContextIds=[];state.marketContextError='';
   state.liquidityReturn=draft.liquidityReturn==='review'?'review':'home';
   state.draftActive=true;state.liquidity=validLiquidity(draft.liquidity,true) ? JSON.parse(JSON.stringify(draft.liquidity)) : {skipped:true,swept:[],target:null};
+  state.liquidityError=invalidLiquidityLabel(state.liquidity)?'Remove control characters from liquidity labels before continuing.':'';
   state.liquidityDraws=emptyDraws();
   for(const side of ['buy','sell']){
     const row=draft.liquidityDraws?.[side];
@@ -933,6 +968,9 @@ function restoreDraft(){
     applyDraft(draft);
     if(draft.undoDraft && draft.undoDraft.checklistVersion===checklistVersionFor(draft.undoDraft.model) && (models.some(m=>m.id===draft.undoDraft.model) || draft.undoDraft.draftActive===true)) state.undoDraft=draft.undoDraft;
     if(Array.isArray(draft.saveAttempts)) for(const pair of draft.saveAttempts) if(validPending(pair)) saveAttempts.set(pair[0],pair[1]);
+    const rejected=draft.rejectedSave;
+    if(rejected && [400,409].includes(rejected.status) && typeof rejected.body==='string' && typeof rejected.key==='string' && saveAttempts.get(rejected.body)===rejected.key)
+      state.rejectedSave={body:rejected.body,key:rejected.key,status:rejected.status};
     if(saveAttempts.size){state.screen='recovery';state.saveMessage=null;}
   }catch{state.storageAvailable=false;}
 }
@@ -949,6 +987,7 @@ function syncSavingControls(){
 }
 function clearDraft(){
   saveAttempts.clear();
+  state.rejectedSave=null;
   state.draftActive=false;state.liquidity={skipped:false,swept:[],target:null};state.liquidityDraws=emptyDraws();state.dealingRange={status:'skipped'};state.rangeError='';state.liquidityError="";state.liquidityReturn="home";state.liquidityOpen=null;state.entryTimeUtc=null;state.inputTimeZone=null;
   state.marketInstrument=phase2PersistentLocal?'NQ_continuous_provisional':'';state.marketDateNY=phase2PersistentLocal?currentNYDate():'';state.marketCutoffUTC='';state.marketMessage='';state.marketContextIds=[];state.marketTargetId=null;state.manualTargetDraft=null;state.marketRangeIds=null;state.manualRangeDraft=null;state.marketContextError='';state.hiddenContextReviewed=false;state.legacyRecovery=false;resetPhase2Client();
   state.model=null;state.answers={};state.timeValue="";state.dateValue="";state.clockValue="";state.questionIndex=0;state.saveMessage=null;state.draftNotice=null;
@@ -1386,6 +1425,12 @@ function reviewResult(){
   const resolved = !checklist().guard && checks.length > 0 && statuses.every(status => status === "yes" || status === "no");
   return {resolved,met:resolved && statuses.every(status => status === "yes")};
 }
+function liquidityContradiction(){
+  const noSweep=state.liquidity.swept.some(item=>item.type==='no_sweep');
+  const runAffirmed=(state.model==='drill' && state.variant==='fvg' && state.answers['io-sweep']==='yes') ||
+    (state.model==='turtle' && state.answers['ts-run']==='yes');
+  return noSweep && runAffirmed ? 'Liquidity says No sweep observed, but a required check says liquidity or a marked level was run. Review the liquidity selection or checklist answer.' : '';
+}
 function show(name){
   if(state.saving) return;
   if(name==="check") state.exampleMode="valid";
@@ -1397,12 +1442,19 @@ function show(name){
   if(title) title.focus({preventScroll:true});
 }
 function layout(top,body){
+  const active=screen.contains?.(document.activeElement)?document.activeElement:null;
+  const focusAttribute=active&&['id','data-outcome','data-direction','data-variant','data-range-choice','data-range-session','data-market-field','data-yahoo-symbol','data-chart-window','data-model','data-action'].find(name=>active.hasAttribute(name));
+  const focusValue=focusAttribute?active.getAttribute(focusAttribute):null;
   persistDraft();
   const status=state.storageAvailable ? 'Draft saved in this tab' : 'Draft recovery unavailable — browser storage is blocked or full';
   const notice=state.draftNotice ? `<p class="notice" role="status">${escapeHTML(state.draftNotice)}</p>` : '';
   const undo=state.undoDraft && !saveAttempts.size ? '<button class="text-button" type="button" data-action="undo-draft">Undo last review replacement</button>' : '';
   const privateNotice='';
   screen.innerHTML = `${top}${privateNotice}${notice}${body}${state.draftActive || state.model || saveAttempts.size ? `<p id="draft-status" class="draft-status ${state.storageAvailable?'':'error'}" role="status">${status}</p>` : ''}${undo}`;
+  if(focusAttribute){
+    const replacement=[...screen.querySelectorAll(`[${focusAttribute}]`)].find(node=>node.getAttribute(focusAttribute)===focusValue);
+    replacement?.focus({preventScroll:true});
+  }
 }
 function closeMenu(){
   $("header-menu").hidden=true;
@@ -1475,22 +1527,54 @@ function renderRecovery(){
   const first=saveAttempts.entries().next().value;
   if(!first){show('home');return;}
   const entry=JSON.parse(first[0]);
+  const rejected=state.rejectedSave?.body===first[0] && state.rejectedSave?.key===first[1] ? state.rejectedSave.status : null;
   layout('<h1 tabindex="-1">Confirm saved review</h1>',
     `<p class="review-detail">This review may already be in your log. Retry to confirm it before starting another review.</p><div class="saved-card"><strong>${labels[entry.checklist_id]}</strong><span>${formatLocal(entry.entry_time_utc)}</span><span>Checklist ${entry.checklist_met?'Met':'Not Met'}</span><small>${versionLabel(entry.checklist_version)}</small></div>${modelScopeNote(entry.checklist_id)}${nyTimeNote(entry.checklist_id,entry.entry_time_utc)}${entry.entry_snapshot?.schema_version===3?'<p class="historical-warning">Historical context in this pending review is retrospective and unverified. Retry keeps the original request and key.</p>':''}<p class="helper">${saveAttempts.size>1?`${saveAttempts.size} earlier save attempts need confirmation.`:'The original result and request are kept for this confirmation.'}</p><div class="action-stack"><button class="primary-button" type="button" data-action="save" ${state.saving?'disabled':''}>${state.saving?'Confirming…':'Retry Save Entry'}</button><button class="text-button" type="button" data-action="history" ${state.saving?'disabled':''}>View history</button></div><p id="save-feedback" class="feedback" role="status"></p>`);
+  if(rejected){
+    const notice=rejected===409?'This request key conflicts with an existing entry. Check History before editing or discarding this pending review; a new save could create a duplicate.':'The log rejected this request. It did not confirm a save. Review your answers and context before trying a new request.';
+    screen.innerHTML+=`<p class="notice" role="alert">${notice}</p><div class="action-stack"><button class="secondary-button" type="button" data-action="recovery-edit">Edit rejected review</button><button class="text-button" type="button" data-action="recovery-discard">Discard pending review</button></div>`;
+  }
   if(state.saveMessage){const feedback=$("save-feedback");feedback.textContent=state.saveMessage.text;feedback.className=`feedback ${state.saveMessage.kind}`;}
+}
+function resolveRejectedSave(discard=false){
+  const first=saveAttempts.entries().next().value,rejected=state.rejectedSave;
+  if(!first || !rejected || rejected.body!==first[0] || rejected.key!==first[1] || ![400,409].includes(rejected.status)) return;
+  if((discard || rejected.status===409) && !window.confirm(rejected.status===409 ?
+    'A review already uses this request key. Check History first. Removing this pending request may allow a duplicate if you save again. Continue?' :
+    'Discard this unsaved review and its pending request? This cannot be undone.')) return;
+  const before=[...saveAttempts];
+  saveAttempts.delete(first[0]);state.rejectedSave=null;
+  if(!persistDraft()){
+    saveAttempts.clear();for(const pair of before)saveAttempts.set(...pair);
+    state.rejectedSave=rejected;
+    state.saveMessage={kind:'error',text:'Recovery details could not be updated in this tab. The original request and key are retained.'};
+    renderRecovery();return;
+  }
+  if(saveAttempts.size){
+    state.saveMessage={kind:'error',text:'This rejected request was removed. Confirm the remaining pending request before editing this review.'};
+    show('recovery');return;
+  }
+  state.saveMessage=null;
+  if(discard){state.undoDraft=null;clearDraft();show('entry');}
+  else {state.draftNotice='The rejected request was removed. Review your entry before saving with a new request key.';show(state.model?'review':'entry');}
 }
 function renderReview(){
   const result = reviewResult();
+  const contradiction=liquidityContradiction();
   const checks = requiredChecks();
   const unresolved = checks.filter(entry => !["yes","no"].includes(answerFor(entry))).length;
   const resultClass = !result.resolved ? "review" : result.met ? "" : "not-met";
   const icon = !result.resolved ? "?" : result.met ? "✓" : "×";
   const resultTitle = state.model==='ifvg' ? (!result.resolved?'Illustrative review incomplete':result.met?'Illustrative checks met':'Illustrative checks not met') : !result.resolved ? "Needs review" : result.met ? "Checklist met" : "Checklist not met";
   const resultText = !result.resolved ? `${unresolved} check${unresolved === 1 ? "" : "s"} still marked Not sure. Resolve before saving.` : result.met ? "Every required check was confirmed." : "At least one required check is No.";
-  const rows = checks.map((entry,index) => `<button class="check-row" type="button" data-edit="${index}" data-status="${answerFor(entry)}" aria-label="Edit check ${index+1}: ${promptFor(entry)}"><span class="check-num">${index+1}</span><span class="check-label">${promptFor(entry)}</span><span class="check-status" aria-hidden="true">${answerFor(entry) === "yes" ? "✓" : answerFor(entry) === "no" ? "×" : "?"}</span></button>`).join("");
+  const rows = checks.map((entry,index) => {
+    const answer=answerFor(entry);
+    const answerLabel=answer==='yes'?'Yes':answer==='no'?'No':'Not sure';
+    return `<button class="check-row" type="button" data-edit="${index}" data-status="${answer}" aria-label="Edit check ${index+1}: ${escapeHTML(promptFor(entry))}. Answer: ${answerLabel}"><span class="check-num">${index+1}</span><span class="check-label">${promptFor(entry)}</span><span class="check-status" aria-hidden="true">${answer==='yes'?'✓':answer==='no'?'×':'?'}</span></button>`;
+  }).join("");
   const sources = modelInfo().sources.map(source => `<a href="${source.href}" target="_blank" rel="noopener noreferrer">${source.label} ↗</a>`).join("");
   const time = parsedEntryTime();
-  const liquidityValid=validLiquidity(canonicalLiquidity()) && (!requiresDraws() || validDraws(state.liquidityDraws));
+  const liquidityValid=validLiquidity(canonicalLiquidity()) && (!requiresDraws() || validCurrentDraws());
   const marketReview=marketSelectionReview();
   const targetTimingProblem=phase2PreviewEnabled && (state.marketTargetId || state.marketRangeIds) && time.valid?historicalTargetTimingProblem(time.iso):'';
   const marketReady=(!phase2PreviewEnabled || (!state.marketContextIds.length && !state.marketRangeIds) || Boolean(marketSelectionRequest())) && !targetTimingProblem;
@@ -1498,9 +1582,14 @@ function renderReview(){
   layout(`${backRow("Checks","previous",4)}<h1 tabindex="-1">Review</h1>`,
     `<div class="review-card ${resultClass}"><div class="review-result"><span class="review-icon" aria-hidden="true">${icon}</span><h2>${resultTitle}</h2></div><div class="review-summary"><div><span aria-hidden="true">▱</span><strong>${labels[checklistId()]}</strong></div><div><span aria-hidden="true">◷</span><strong>${time.valid ? formatLocal(time.iso) : "Missing"}</strong></div></div></div><p class="review-detail">${resultText}</p>${modelScopeNote(checklistId())}${time.valid?nyTimeNote(checklistId(),time.iso):""}<p class="helper">${versionLabel(checklistVersionFor(state.model))} · ${state.direction==='long'?'Long':'Short'}</p><div class="liquidity-summary">${liquiditySummary(state.liquidity)}${requiresDraws()?drawSummary(state.liquidityDraws):''}<button type="button" class="text-button" data-action="liquidity">${phase2PersistentLocal?'Edit liquidity':'Edit liquidity or range'}</button></div>${visibleRangeSummary()}${marketReview}<p class="quality-summary">${result.resolved?qualityText(snapshotForReview(marketReady)):'Checklist score pending · resolve every required check'}</p>${!marketReady?`<p class="notice">${escapeHTML(targetTimingProblem||'Reload the historical snapshot and reselect references before saving.')}</p>`:''}${!liquidityValid||!validRange(state.dealingRange,Boolean(state.marketRangeIds))?`<p class="notice">${requiresDraws()?'Complete liquidity and both draw prices':'Complete or skip optional context'} before saving. <button type="button" class="text-button" data-action="liquidity">Edit context</button></p>`:''}${chartIllustration("review")}<div class="check-list" aria-label="Checks; tap a row to edit">${rows}</div><div class="action-stack"><button id="save-button" class="primary-button" type="button" data-action="save" ${saveBlocked ? "disabled" : ""}>${state.saving ? "Saving…" : "Save entry review"}</button><button class="text-button" type="button" data-action="edit-setup">Edit time or direction</button></div><p id="save-feedback" class="feedback" role="status"></p><details class="source-details"><summary>Source notes</summary><div class="source-links">${sources}</div></details>`);
   const feedback = $("save-feedback");
+  if(contradiction){
+    const warning=document.createElement('p');
+    warning.className='notice';warning.setAttribute('role','alert');warning.textContent=contradiction;
+    screen.querySelector('.liquidity-summary')?.after(warning);
+  }
   if(state.saveMessage){feedback.textContent=state.saveMessage.text;feedback.className=`feedback ${state.saveMessage.kind}`;}
-  else if(state.apiStatus === "loading") feedback.textContent="Connecting to the local entry log…";
-  else if(state.apiStatus !== "ready") feedback.textContent="Local entry log unavailable. Start the dashboard server to save.";
+  else if(state.apiStatus === "loading") feedback.textContent="Opening this browser's journal…";
+  else if(state.apiStatus !== "ready") feedback.textContent="Browser journal unavailable. Check site storage and free space, close other ICT Entry Desk tabs, then refresh.";
   else if(!marketReady) feedback.textContent=targetTimingProblem||"Reload the historical snapshot and reselect references before saving.";
   else if(!result.resolved) feedback.textContent="Tap a Not sure check above to resolve it.";
   else feedback.textContent="Stores your original required answers and liquidity context. Record a trade outcome separately.";
@@ -1508,17 +1597,17 @@ function renderReview(){
 function renderSaved(){
   const entry=state.savedEntry;
   layout(`<div class="saved-hero"><span class="saved-mark ${entry.checklist_met?'':'not-met'}" aria-hidden="true">${entry.checklist_met?'✓':'×'}</span><h1 tabindex="-1">Entry review saved</h1></div>`,
-    `${entrySummary(entry)}${validSnapshot(entry.entry_snapshot)?`<div class="liquidity-summary">${liquiditySummary(entry.entry_snapshot.liquidity)}${entry.entry_snapshot.schema_version===4?drawSummary(entry.entry_snapshot.liquidity_draws):''}</div>`:""}${rangeSummary(entry.entry_snapshot?.dealing_range)}${marketSummary(entry.entry_snapshot)}<p class="outcome-note">${outcomeLabel(entry.outcome)}</p><div class="action-stack"><button class="primary-button" type="button" data-action="saved-outcome">Record trade outcome</button><button class="secondary-button" type="button" data-action="history">View history</button><button class="text-button" type="button" data-action="new">New review</button></div>`);
+    `${entrySummary(entry)}${validSnapshot(entry.entry_snapshot)?`<div class="liquidity-summary">${liquiditySummary(entry.entry_snapshot.liquidity)}${[4,5].includes(entry.entry_snapshot.schema_version)?drawSummary(entry.entry_snapshot.liquidity_draws):''}</div>`:""}${rangeSummary(entry.entry_snapshot?.dealing_range)}${marketSummary(entry.entry_snapshot)}<p class="outcome-note">${outcomeLabel(entry.outcome)}</p><div class="action-stack"><button class="primary-button" type="button" data-action="saved-outcome">Record trade outcome</button><button class="secondary-button" type="button" data-action="history">View history</button><button class="text-button" type="button" data-action="new">New review</button></div>`);
 }
 function renderHistory(){
   const ready=state.apiStatus==='ready';
-  const rows=ready?state.entries.map(entry=>`<button type="button" class="history-card" data-entry="${Number(entry.id)}"><span class="history-glyph" aria-hidden="true">${glyphs[String(entry.checklist_id).startsWith('drill')?'drill':entry.checklist_id]||'▱'}</span><span class="history-info"><strong>${escapeHTML(labels[entry.checklist_id]||'Unknown checklist')}</strong><time datetime="${escapeHTML(entry.entry_time_utc)}">${escapeHTML(formatLocal(entry.entry_time_utc))}</time><small>${qualityText(entry.entry_snapshot)}</small>${modelScopeHistoryNote(entry.checklist_id)?`<small>${modelScopeHistoryNote(entry.checklist_id)}</small>`:''}<small>Range: ${escapeHTML(rangeHistoryText(entry.entry_snapshot))}</small>${entry.entry_snapshot?.market_context?.state==='historical_reconstruction_unverified'?'<small>Historical context · unverified</small>':''}<span class="history-outcome">${outcomeLabel(entry.outcome)}</span></span><span class="history-result ${entry.checklist_met?'':'not-met'}">${entry.checklist_met?'MET':'NOT MET'}</span></button>`).join(''):'';
+  const rows=ready?state.entries.map(entry=>`<button type="button" class="history-card" data-entry="${Number(entry.id)}"><span class="history-glyph" aria-hidden="true">${glyphs[String(entry.checklist_id).startsWith('drill')?'drill':entry.checklist_id]||'▱'}</span><span class="history-info"><strong>${escapeHTML(labels[entry.checklist_id]||'Unknown checklist')}</strong><time datetime="${escapeHTML(entry.entry_time_utc)}">${escapeHTML(formatLocal(entry.entry_time_utc))}</time><small>${qualityText(entry.entry_snapshot)}</small><small>Instrument: ${escapeHTML(instrumentText(entry.entry_snapshot))}</small>${modelScopeHistoryNote(entry.checklist_id)?`<small>${modelScopeHistoryNote(entry.checklist_id)}</small>`:''}<small>Range: ${escapeHTML(rangeHistoryText(entry.entry_snapshot))}</small>${entry.entry_snapshot?.market_context?.state==='historical_reconstruction_unverified'?'<small>Historical context · unverified</small>':''}<span class="history-outcome">${outcomeLabel(entry.outcome)}</span></span><span class="history-result ${entry.checklist_met?'':'not-met'}">${entry.checklist_met?'MET':'NOT MET'}</span></button>`).join(''):'';
   layout('<h1 tabindex="-1">History</h1>', `${state.draftActive || state.model || saveAttempts.size ? `<button class="secondary-button resume-button" type="button" data-action="resume">${saveAttempts.size?'Confirm pending save':'Resume review'}</button>`:''}${ready?renderScoreboard():''}<h2 class="history-heading">Recent reviews <span>Latest ${state.entries.length} · up to 50</span></h2>${!ready?`<p class="empty-state">${state.apiStatus==='loading'?'Loading entries…':'The local entry log is unavailable.'}</p>`:!state.entries.length?'<p class="empty-state">Your scoreboard starts with your first entry review.</p>':`<div class="history-list">${rows}</div>`}<div class="history-actions"><button class="text-button" type="button" data-action="refresh">Refresh</button></div>`);
 }
 function renderDetail(){
   const entry=state.selectedEntry,snapshot=entry.entry_snapshot;
   const answers=validSnapshot(snapshot)?`<h2 class="detail-heading">Original required answers</h2><ol class="original-answers">${snapshot.checks.map(check=>`<li><span>${escapeHTML(check.title)}${check.automatic?'<small>Automatic check</small>':''}</span><strong class="${check.answer==='yes'?'good':'bad'}">${check.answer==='yes'?'Yes':'No'}</strong></li>`).join('')}</ol>`:'<p class="notice">Detailed score unavailable. This earlier review retains its original checklist result.</p><p class="helper">Liquidity context and direction were not recorded.</p>';
-  layout(`${backRow('History','history',5)}<h1 tabindex="-1">Entry review</h1>`,`${state.outcomeSaved?'<p class="notice" role="status">Outcome saved. Your original checklist answers are unchanged.</p>':""}${entrySummary(entry)}${validSnapshot(snapshot)?`<div class="liquidity-summary">${liquiditySummary(snapshot.liquidity)}${snapshot.schema_version===4?drawSummary(snapshot.liquidity_draws):''}</div>`:''}${rangeSummary(snapshot?.dealing_range)}${marketSummary(snapshot)}${answers}<div class="outcome-panel"><h2>Trade outcome</h2><p>${outcomeLabel(entry.outcome)}</p>${entry.outcome_updated_at?`<p class="helper">Updated ${escapeHTML(formatLocal(entry.outcome_updated_at))}</p>`:''}<button type="button" class="secondary-button" data-action="edit-outcome">Record or edit outcome</button></div>`);
+  layout(`${backRow('History','history',5)}<h1 tabindex="-1">Entry review</h1>`,`${state.outcomeSaved?'<p class="notice" role="status">Outcome saved. Your original checklist answers are unchanged.</p>':""}${entrySummary(entry)}${validSnapshot(snapshot)?`<div class="liquidity-summary">${liquiditySummary(snapshot.liquidity)}${[4,5].includes(snapshot.schema_version)?drawSummary(snapshot.liquidity_draws):''}</div>`:''}${rangeSummary(snapshot?.dealing_range)}${marketSummary(snapshot)}${answers}<div class="outcome-panel"><h2>Trade outcome</h2><p>${outcomeLabel(entry.outcome)}</p>${entry.outcome_updated_at?`<p class="helper">Updated ${escapeHTML(formatLocal(entry.outcome_updated_at))}</p>`:''}<button type="button" class="secondary-button" data-action="edit-outcome">Record or edit outcome</button></div>`);
 }
 function renderOutcome(){
   const entry=state.selectedEntry;
@@ -1570,7 +1659,7 @@ async function saveEntry(){
   if(state.saving) return;
   if(!saveAttempts.size){
     const result=reviewResult(),time=parsedEntryTime();
-    if(state.apiStatus!=="ready" || !result.resolved || !time.valid || !validLiquidity(canonicalLiquidity()) || (requiresDraws() && !validDraws(state.liquidityDraws)) || !validRange(state.dealingRange,Boolean(state.marketRangeIds)) ||
+    if(state.apiStatus!=="ready" || !result.resolved || !time.valid || !validLiquidity(canonicalLiquidity()) || (requiresDraws() && !validCurrentDraws()) || !validRange(state.dealingRange,Boolean(state.marketRangeIds)) ||
        (phase2PreviewEnabled && historicalTargetTimingProblem(time.iso)) ||
        (phase2PreviewEnabled && (state.marketContextIds.length || state.marketRangeIds) && !marketSelectionRequest())) return;
     const body=JSON.stringify({checklist_id:checklistId(),entry_time_utc:time.iso,checklist_met:result.met,checklist_version:checklistVersionFor(state.model),entry_snapshot:snapshotForReview()});
@@ -1578,7 +1667,7 @@ async function saveEntry(){
   }
   const [body,requestKey]=saveAttempts.entries().next().value;
   const submitted=JSON.parse(body);
-  state.screen='recovery';state.saveMessage=null;
+  state.screen='recovery';state.saveMessage=null;state.rejectedSave=null;
   if(!persistDraft()){
     state.saveMessage={kind:'error',text:'Save paused: this browser cannot keep the retry details. Enable tab storage, then retry. No request was sent.'};
     renderRecovery();return;
@@ -1605,7 +1694,13 @@ async function saveEntry(){
       state.screen=saveAttempts.size?'recovery':'review';
       persistDraft();render();return;
     }
-    state.saveMessage={kind:'error',text:[400,409].includes(error.status)?'The server could not accept this saved review. Its request is retained. Use a compatible app/server version before retrying.':'Save could not be confirmed. Retry this saved review; the same request will only be logged once.'};
+    if([400,409].includes(error.status)){
+      state.rejectedSave={body,key:requestKey,status:error.status};
+      state.saveMessage={kind:'error',text:error.status===409?
+        'The log reports a request-key conflict. Another entry may already use this key. Check History, then choose Edit or Discard if appropriate.':
+        'The log rejected this review. Check the fields and choose Edit to correct it, or Discard to start over.'};
+      persistDraft();
+    }else state.saveMessage={kind:'error',text:'Save could not be confirmed. Retry this saved review with the same request key to avoid a duplicate.'};
     renderRecovery();
   }
 }
@@ -1618,7 +1713,7 @@ screen.addEventListener("click",event => {
     return;
   }
   const pendingAction=event.target.closest("[data-action]")?.dataset.action;
-  if(saveAttempts.size && !['save','history','refresh','resume'].includes(pendingAction)){show('recovery');return;}
+  if(saveAttempts.size && !['save','history','refresh','resume','recovery-edit','recovery-discard'].includes(pendingAction)){show('recovery');return;}
   const marketRange=event.target.closest('[data-market-range]');
   if(marketRange && state.screen==='liquidity'){selectMarketRange(marketRange.dataset.marketRange);return;}
   const marketTarget=event.target.closest('[data-market-target]');
@@ -1686,7 +1781,7 @@ screen.addEventListener("click",event => {
   else if(action==='chart-load' && state.screen==='liquidity' && phase2Client?.getSnapshot()){loadHistoricalChart(phase2Client.getSnapshot());renderLiquidity();}
   else if(action==='liquidity'){state.liquidityReturn=state.screen==='review'?'review':'home';show('liquidity');}
   else if(action==='liquidity-continue'){
-    const error=state.liquidity.skipped?'':liquidityProblem(state.liquidity);state.liquidityError=error || (requiresDraws()&&!validDraws(state.liquidityDraws)?'Select both draw types, their required detail, and valid numeric prices.':'');
+    const error=state.liquidity.skipped?'':liquidityProblem(state.liquidity);state.liquidityError=error || (requiresDraws()?drawInputProblem(state.liquidityDraws):'');
     state.rangeError=validRange(state.dealingRange,Boolean(state.marketRangeIds))?'':'Confirm high and low, choose Not sure yet, or skip the range.';
     if(state.liquidityError || state.rangeError) renderLiquidity();else show(state.liquidityReturn==='review' && state.model?'review':'home');
   }
@@ -1713,6 +1808,8 @@ screen.addEventListener("click",event => {
   else if(action==="previous") previous();
   else if(action==="edit-setup") show("setup");
   else if(action==="save") saveEntry();
+  else if(action==="recovery-edit") resolveRejectedSave(false);
+  else if(action==="recovery-discard") resolveRejectedSave(true);
   else if(action==="history"){openHistory();}
   else if(action==="history-back" || action==="resume") resumeReview();
   else if(action==="undo-draft") undoReplacement();
@@ -1730,8 +1827,9 @@ screen.addEventListener("input",event => {
       row.type=types.includes(event.target.value)?event.target.value:'';row.detail='';state.liquidityError='';persistDraft();renderLiquidity();
       screen.querySelector(`[data-draw-side="${side}"][data-draw-field="${row.type.startsWith('session_')||row.type.startsWith('equal_')||row.type.startsWith('swing_')?'detail':'price'}"]`)?.focus({preventScroll:true});
     }else{
-      row[field]=event.target.value;state.liquidityError='';persistDraft();
-      const button=screen.querySelector('[data-action="liquidity-continue"]');if(button)button.disabled=!validDraws(state.liquidityDraws);
+      row[field]=event.target.value;state.liquidityError=drawInputProblem(state.liquidityDraws);persistDraft();
+      const error=screen.querySelector('#liquidity-error');if(error)error.textContent=state.liquidityError;
+      const button=screen.querySelector('[data-action="liquidity-continue"]');if(button)button.disabled=!validCurrentDraws();
     }
     return;
   }
@@ -1783,7 +1881,12 @@ screen.addEventListener("input",event => {
   if(event.target.dataset?.liquidityLabel){
     const field=event.target.dataset.liquidityLabel,type=event.target.dataset.type;
     const reference=field==='swept'?state.liquidity.swept.find(item=>item.type===type):state.liquidity.target;
-    if(reference && reference.type===type){reference.label=event.target.value;state.liquidityError='';persistDraft();}
+    if(reference && reference.type===type){
+      reference.label=event.target.value;
+      state.liquidityError=invalidLiquidityLabel(state.liquidity)?'Remove control characters from liquidity labels before continuing.':'';
+      const error=screen.querySelector('#liquidity-error');if(error)error.textContent=state.liquidityError;
+      persistDraft();
+    }
     return;
   }
   if(event.target.id==="entry-date" || event.target.id==="entry-clock"){

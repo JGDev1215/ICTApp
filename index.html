@@ -5,17 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#ffffff">
   <title>ICT Entry Desk</title>
-  <link rel="stylesheet" href="styles.css?v=65d7fd9-r2">
-  <script src="browser-log.js?v=65d7fd9-r2" defer></script>
-  <script src="app.js?v=65d7fd9-r2" defer></script>
-  <script src="backup-ui.js?v=65d7fd9-r2" defer></script>
-  <script src="offline.js?v=65d7fd9-r2" defer></script>
+  <link rel="stylesheet" href="styles.css?v=b8f7feb4f7d6">
+  <script src="browser-log.js?v=b8f7feb4f7d6" defer></script>
+  <script src="app.js?v=b8f7feb4f7d6" defer></script>
+  <script src="backup-ui.js?v=b8f7feb4f7d6" defer></script>
+  <script src="offline.js?v=b8f7feb4f7d6" defer></script>
+  <script>
+    window.ictAssetLoadFailed=false;
+    window.addEventListener('error',event=>{
+      if(event.target instanceof HTMLScriptElement || event.target instanceof HTMLLinkElement)window.ictAssetLoadFailed=true;
+    },true);
+  </script>
 </head>
 <body>
   <div class="app-shell">
     <header class="app-header">
       <button id="home-button" class="brand-button" type="button" aria-label="Choose entry model"><span class="brand-symbol" aria-hidden="true">▱</span><span>ICT Entry Desk</span></button>
-      <button id="menu-button" class="header-button" type="button" aria-label="Open menu" aria-expanded="false">☰</button>
+      <button id="menu-button" class="header-button" type="button" aria-label="Menu" aria-controls="header-menu" aria-expanded="false">☰</button>
       <nav id="header-menu" class="header-menu" aria-label="Main menu" hidden>
         <button type="button" data-nav="home">Choose model</button>
         <button type="button" data-nav="new">New entry</button>
@@ -24,12 +30,21 @@
     </header>
     <p class="test-notice">Trades stay in this browser on this device. Other browsers and devices have separate histories. Clearing site data can erase this one.</p>
     <div class="backup-actions"><button id="export-backup" type="button">Export backup</button><button id="import-backup" type="button">Import backup</button><input id="backup-file" type="file" accept="application/json,.json" aria-label="Choose backup JSON"><span id="backup-status" role="status"></span></div>
-    <main id="screen" class="screen"></main>
+    <p id="asset-status" class="load-status" role="alert" hidden></p><p id="offline-status" class="load-status" role="status" hidden></p>
+    <main id="screen" class="screen"><noscript><p class="load-status">ICT Entry Desk needs JavaScript to show reviews and access this browser's journal. Enable JavaScript, then reload.</p></noscript></main>
     <nav class="bottom-nav" aria-label="Primary navigation">
       <button id="nav-home" type="button" aria-label="Models" title="Models"><span class="nav-symbol" aria-hidden="true">⌂</span><span class="nav-label">Models</span></button>
       <button id="nav-new" class="nav-new" type="button" aria-label="New entry" title="New entry"><span class="nav-symbol" aria-hidden="true">+</span><span class="nav-label">New review</span></button>
       <button id="nav-history" type="button" aria-label="History" title="History"><span class="nav-symbol" aria-hidden="true">◷</span><span class="nav-label">History</span></button>
     </nav>
   </div>
+  <script>
+    window.addEventListener('load',()=>{
+      if(!window.ictAssetLoadFailed && typeof window.entryBrowserLog==='function' && document.querySelector('#screen h1'))return;
+      const status=document.getElementById('asset-status');
+      status.hidden=false;
+      status.textContent='ICT Entry Desk did not finish loading. Reconnect and reload. If this continues, check site storage and use your downloaded backup.';
+    });
+  </script>
 </body>
 </html>
