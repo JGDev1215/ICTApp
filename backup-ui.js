@@ -1,60 +1,79 @@
 "use strict";
 (() => {
   const status=document.getElementById('backup-status');
-  const input=document.getElementById('backup-file');
   const MAX_IMPORT_BYTES=50*1024*1024;
   const MAX_PART_BYTES=48*1024*1024;
   const encoder=new TextEncoder();
-  let exportParts=null,exportIndex=0,exportCount=0,exportBusy=false;
+  const exports={local:null,cloud:null};
+  let busy=false;
   function splitBackup(backup){
     const headerBytes=encoder.encode(JSON.stringify({...backup,entries:[]})).byteLength;
     const parts=[];let entries=[],bytes=headerBytes;
     for(const entry of backup.entries){
       const entryBytes=encoder.encode(JSON.stringify(entry)).byteLength;
       if(headerBytes+entryBytes>MAX_PART_BYTES)throw new Error('One entry exceeds the backup part limit.');
-      if(entries.length && bytes+1+entryBytes>MAX_PART_BYTES){parts.push({...backup,entries});entries=[];bytes=headerBytes;}
-      bytes+=entryBytes+(entries.length?1:0);
-      entries.push(entry);
+      if(entries.length&&bytes+1+entryBytes>MAX_PART_BYTES){parts.push({...backup,entries});entries=[];bytes=headerBytes;}
+      bytes+=entryBytes+(entries.length?1:0);entries.push(entry);
     }
     parts.push({...backup,entries});
     return parts;
   }
-  document.getElementById('export-backup').addEventListener('click',async()=>{
-    if(exportBusy)return;
-    exportBusy=true;
+  async function exportBackup(source){
+    if(busy)return;
+    busy=true;
     try{
-      if(!exportParts){
-        status.textContent='Preparing backup…';
-        const backup=await window.entryBrowserBackup('export');
-        exportParts=splitBackup(backup);exportIndex=0;exportCount=backup.entries.length;
+      const owner=source==='cloud'?await window.entryCloudStore.currentUserId():null;
+      if(!exports[source]||exports[source].owner!==owner){
+        status.textContent=source==='cloud'?'Preparing cloud backup…':'Preparing old local archive…';
+        const backup=source==='cloud'?await window.entryCloudBackup('export'):await window.entryBrowserBackup('export');
+        exports[source]={parts:splitBackup(backup),index:0,count:backup.entries.length,owner};
       }
-      const part=exportParts[exportIndex],total=exportParts.length;
+      const state=exports[source],part=state.parts[state.index],total=state.parts.length;
       const blob=new Blob([JSON.stringify(part)],{type:'application/json'});
       if(blob.size>MAX_IMPORT_BYTES)throw new Error('Backup part exceeds the import limit.');
-      const url=URL.createObjectURL(blob);
-      const link=document.createElement('a');
+      const url=URL.createObjectURL(blob),link=document.createElement('a');
       const date=part.exported_at.slice(0,10);
-      const suffix=total===1?'':`-part-${String(exportIndex+1).padStart(String(total).length,'0')}-of-${total}`;
-      link.href=url;link.download=`ict-entry-desk-backup-${date}${suffix}.json`;
+      const suffix=total===1?'':`-part-${String(state.index+1).padStart(String(total).length,'0')}-of-${total}`;
+      link.href=url;
+      link.download=`ict-entry-desk-${source==='cloud'?'cloud-backup':'local-archive'}-${date}${suffix}.json`;
       document.body.append(link);link.click();link.remove();
       setTimeout(()=>URL.revokeObjectURL(url),60000);
-      exportIndex++;
-      const entryCount=`${exportCount} entr${exportCount===1?'y':'ies'}`;
-      if(exportIndex<total)status.textContent=`Part ${exportIndex} of ${total} download requested. Click Export backup again for the next part. Verify every file and import every part to restore all ${entryCount}.`;
-      else{status.textContent=`Backup download requested: ${entryCount} in ${total} part${total===1?'':'s'}. Verify every file before relying on it. JSON backups are readable and unencrypted; keep them private.`;exportParts=null;exportIndex=0;}
-    }catch(error){status.textContent=`Backup failed: ${error.message}`;}
-    finally{exportBusy=false;}
-  });
-  document.getElementById('import-backup').addEventListener('click',()=>input.click());
+      state.index++;
+      const itemCount=`${state.count} entr${state.count===1?'y':'ies'}`;
+      if(state.index<total)status.textContent=`Part ${state.index} of ${total} download requested. Click the same export button for the next part. Keep every part of ${itemCount}.`;
+      else{
+        status.textContent=`${source==='cloud'?'Cloud backup':'Old local archive'} download requested: ${itemCount} in ${total} part${total===1?'':'s'}. Verify every file. JSON backups are readable and unencrypted; keep them private.`;
+        exports[source]=null;
+      }
+    }catch(error){status.textContent=`Backup failed: ${error.message}`;exports[source]=null;}
+    finally{busy=false;}
+  }
+  document.getElementById('export-backup').addEventListener('click',()=>exportBackup('local'));
+  document.getElementById('export-cloud-backup').addEventListener('click',()=>exportBackup('cloud'));
+  const input=document.getElementById('cloud-backup-files');
+  document.getElementById('import-cloud-backup').addEventListener('click',()=>input.click());
   input.addEventListener('change',async()=>{
-    const file=input.files?.[0];input.value='';if(!file)return;
-    if(file.size>MAX_IMPORT_BYTES){status.textContent='Backup exceeds 50 MiB. Import each numbered part separately.';return;}
-    status.textContent='Checking backup…';
+    const files=[...input.files];input.value='';if(!files.length)return;
+    if(busy)return;
+    busy=true;
     try{
-      const backup=JSON.parse(await file.text());
-      const result=await window.entryBrowserBackup('import',backup);
-      status.textContent=`Import complete: ${result.added} added, ${result.skipped} already present. Existing entries were kept.`;
-      await loadEntries();
-    }catch(error){status.textContent=`Import failed: ${error.message}`;}
+      if(files.some(file=>file.size>MAX_IMPORT_BYTES))throw new Error('A backup part exceeds 50 MiB. Select smaller numbered parts.');
+      status.textContent='Checking every backup part before import…';
+      const documents=await Promise.all(files.map(async file=>({name:file.name,backup:JSON.parse(await file.text())})));
+      documents.sort((a,b)=>{
+        const number=name=>Number(/-part-(\d+)-of-\d+\.json$/i.exec(name)?.[1]||0);
+        return number(a.name)-number(b.name);
+      });
+      const result=await window.entryCloudBackup('import',documents);
+      status.textContent=`Cloud import complete: ${result.added} added, ${result.skipped} already present, ${result.conflicted} conflicts. Keep the source files until reconciliation is complete.`;
+      if(typeof window.loadEntries==='function'){
+        try{await window.loadEntries();}
+        catch{status.textContent+=' History refresh failed; reload after reconnecting to verify the imported rows.';}
+      }
+    }catch(error){
+      const progress=error.progress;
+      const advice=error.status===409?'Resolve the conflicting row before retrying.':'A network error may have saved another row without confirmation; retry the same files after reconnecting to reconcile by request key.';
+      status.textContent=`Cloud import stopped: ${error.message}${progress?` (${progress.added} confirmed added, ${progress.skipped} already present before stop)` : ''}. Keep all files. ${advice}`;
+    }finally{busy=false;}
   });
 })();
