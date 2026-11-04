@@ -18,6 +18,8 @@
   const LABEL_REQUIRED = ['session_high','session_low','swing_high','swing_low','other'];
   const SWEEP_STATES = ['no_sweep','not_sure'];
   const OUTCOMES = ['not_recorded','not_taken','open','win','loss','break_even'];
+  const DRAW_TYPES={buy:['previous_day_high','previous_week_high','session_high','equal_highs','swing_high'],sell:['previous_day_low','previous_week_low','session_low','equal_lows','swing_low']};
+  const DRAW_PRICE=/^-?(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{1,12})?$/;
   const fail = (message,status=400) => Object.assign(new Error(message),{status});
   const object = value => value!==null && typeof value==='object' && !Array.isArray(value);
   const exact = (value,keys) => object(value) && Object.keys(value).sort().join(',')===[...keys].sort().join(',');
@@ -39,6 +41,20 @@
     if(typeof value.high!=='number'||!Number.isFinite(value.high)||typeof value.low!=='number'||!Number.isFinite(value.low)||value.high<=value.low)throw fail('Range high must exceed a finite low');
     return {status:'confirmed',kind:value.kind,session:value.session,label,timeframe:value.timeframe,high:value.high,low:value.low};
   }
+  function liquidityDraws(value){
+    if(!exact(value,['buy','sell']))throw fail('Select both manual draws');
+    const result={};
+    for(const side of ['buy','sell']){
+      const row=value[side];
+      if(!exact(row,['type','detail','price'])||!DRAW_TYPES[side].includes(row.type)||
+         typeof row.detail!=='string'||typeof row.price!=='string'||!DRAW_PRICE.test(row.price))throw fail('Invalid manual draw');
+      const detail=row.type.startsWith('session_')?['asia','london','new_york'].includes(row.detail):
+        row.type.startsWith('equal_')||row.type.startsWith('swing_')?['5-minute','15-minute','1-hour'].includes(row.detail):row.detail==='';
+      if(!detail)throw fail('Invalid draw session or timeframe');
+      result[side]={type:row.type,detail:row.detail,price:row.price};
+    }
+    return result;
+  }
   function envelope(payload){
     if(!object(payload)||!['checklist_id','entry_time_utc','checklist_met'].every(k=>Object.hasOwn(payload,k))||Object.keys(payload).some(k=>!['checklist_id','entry_time_utc','checklist_met','checklist_version','entry_snapshot'].includes(k)))throw fail('Invalid entry fields');
     if(!Object.hasOwn(REQUIRED_CHECKS,payload.checklist_id)||typeof payload.checklist_met!=='boolean')throw fail('Invalid checklist');
@@ -55,7 +71,7 @@
   function snapshot(value,entry){
     const rules=Object.hasOwn(RULESETS,entry.checklist_version)?RULESETS[entry.checklist_version]:null;
     if(!rules)throw fail('Unsupported snapshot checklist version');
-    if(![1,2].includes(value?.schema_version)||!exact(value,value.schema_version===1?['schema_version','direction','checks','liquidity']:['schema_version','direction','checks','liquidity','dealing_range'])||!['long','short'].includes(value.direction))throw fail('Invalid snapshot');
+    if(![1,2,4].includes(value?.schema_version)||!exact(value,value.schema_version===1?['schema_version','direction','checks','liquidity']:value.schema_version===2?['schema_version','direction','checks','liquidity','dealing_range']:['schema_version','direction','checks','liquidity','dealing_range','liquidity_draws'])||!['long','short'].includes(value.direction))throw fail('Invalid snapshot');
     if(entry.checklist_id==='drill_wick'&&value.direction!=='short')throw fail('Long wick is not supported');
     const expected=rules[entry.checklist_id];
     if(!expected||!Array.isArray(value.checks)||value.checks.length!==expected.length)throw fail('Snapshot must include every required check');
@@ -85,7 +101,8 @@
     const target=liq.target===null?null:reference(liq.target,true);
     if(!liq.skipped&&(!swept.length||!target))throw fail('Select liquidity or skip');
     const normalized={schema_version:value.schema_version,direction:value.direction,checks,liquidity:{skipped:liq.skipped,swept:liq.skipped?[]:swept,target:liq.skipped?null:target}};
-    if(value.schema_version===2)normalized.dealing_range=dealingRange(value.dealing_range);
+    if(value.schema_version===2||value.schema_version===4)normalized.dealing_range=dealingRange(value.dealing_range);
+    if(value.schema_version===4)normalized.liquidity_draws=liquidityDraws(value.liquidity_draws);
     return normalized;
   }
   function validate(entry){
@@ -150,6 +167,48 @@
           const entry=validate(incoming),row={...entry,requestKey:key,fingerprint:JSON.stringify(entry),outcome:'not_recorded',outcome_updated_at:null};
           store.add(row).onsuccess=added=>{result=publicEntry({...row,id:added.target.result});};
         }catch(error){abort(error);}
+      };
+    });}finally{db.close();}
+  };
+  // Backups merge by original request identity. Import never clears or updates
+  // an existing entry, including its outcome.
+  window.entryBrowserBackup=async function(action,backup){
+    if(action==='export'){
+      const db=await open();
+      try{return await new Promise((resolve,reject)=>{
+        const tx=db.transaction('entries','readonly');let rows=[];
+        tx.objectStore('entries').getAll().onsuccess=event=>{rows=event.target.result;};
+        tx.oncomplete=()=>resolve({format:'ict-entry-desk-browser-backup-v1',exported_at:new Date().toISOString(),entries:rows.map(row=>({request_key:row.requestKey,entry:publicEntry(row)}))});
+        tx.onabort=()=>reject(tx.error||new Error('Backup export failed'));
+      });}finally{db.close();}
+    }
+    if(action!=='import'||!exact(backup,['format','exported_at','entries'])||backup.format!=='ict-entry-desk-browser-backup-v1'||
+       typeof backup.exported_at!=='string'||!Array.isArray(backup.entries)||backup.entries.length>100000)throw fail('Invalid backup file');
+    const prepared=backup.entries.map(item=>{
+      if(!exact(item,['request_key','entry'])||typeof item.request_key!=='string'||!/^[A-Za-z0-9_-]{16,128}$/.test(item.request_key))throw fail('Invalid backup request key');
+      const row=item.entry;
+      if(!exact(row,['id','checklist_id','checklist_version','entry_time_utc','checklist_met','entry_snapshot','outcome','outcome_updated_at'])||
+         !Number.isSafeInteger(row.id)||row.id<1||!OUTCOMES.includes(row.outcome)||
+         !(row.outcome_updated_at===null||typeof row.outcome_updated_at==='string'&&Number.isFinite(Date.parse(row.outcome_updated_at))))throw fail('Invalid backup entry');
+      const source={checklist_id:row.checklist_id,checklist_version:row.checklist_version,entry_time_utc:row.entry_time_utc,checklist_met:row.checklist_met};
+      if(row.entry_snapshot!==null)source.entry_snapshot=row.entry_snapshot;
+      const entry=validate(envelope(source));
+      return {requestKey:item.request_key,fingerprint:JSON.stringify(entry),...entry,outcome:row.outcome,outcome_updated_at:row.outcome_updated_at};
+    });
+    if(new Set(prepared.map(row=>row.requestKey)).size!==prepared.length)throw fail('Duplicate backup request key');
+    const db=await open();
+    try{return await new Promise((resolve,reject)=>{
+      const tx=db.transaction('entries','readwrite'),store=tx.objectStore('entries'),index=store.index('requestKey');let added=0,skipped=0,failure;
+      const abort=error=>{failure=error;tx.abort();};
+      tx.oncomplete=()=>resolve({added,skipped});
+      tx.onabort=()=>reject(failure||tx.error||new Error('Backup import failed'));
+      for(const row of prepared)index.get(row.requestKey).onsuccess=event=>{
+        const old=event.target.result;
+        if(old){
+          const fields=['checklist_id','checklist_version','entry_time_utc','checklist_met','entry_snapshot'];
+          if(fields.some(field=>stable(old[field]??null)!==stable(row[field]??null))){abort(fail('Backup conflicts with an existing entry'));return;}
+          skipped++;
+        }else{store.add(row);added++;}
       };
     });}finally{db.close();}
   };

@@ -8,6 +8,8 @@
   <link rel="stylesheet" href="styles.css">
   <script src="browser-log.js" defer></script>
   <script src="app.js" defer></script>
+  <script src="backup-ui.js" defer></script>
+  <script src="offline.js" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -20,7 +22,8 @@
         <button type="button" data-nav="history">History</button>
       </nav>
     </header>
-    <p class="test-notice">Browser test · History stays in this browser.<br>No sync. Clearing website data removes it.</p>
+    <p class="test-notice">Trades stay in this browser on this device. Other browsers and devices have separate histories. Clearing site data can erase this one.</p>
+    <div class="backup-actions"><button id="export-backup" type="button">Export backup</button><button id="import-backup" type="button">Import backup</button><input id="backup-file" type="file" accept="application/json,.json" aria-label="Choose backup JSON"><span id="backup-status" role="status"></span></div>
     <main id="screen" class="screen"></main>
     <nav class="bottom-nav" aria-label="Primary navigation">
       <button id="nav-home" type="button" aria-label="Models" title="Models"><span class="nav-symbol" aria-hidden="true">⌂</span><span class="nav-label">Models</span></button>
