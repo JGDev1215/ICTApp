@@ -6,14 +6,14 @@
   <meta name="theme-color" content="#ffffff">
   <script>window.ICT_CLOUD_CONFIG={url:"https://cvpxdwychelulvbkpete.supabase.co",publishableKey:"sb_publishable_PlcoALnhFi1rRCDKG016hQ_VUHVYdwi",ownerId:"df5a36b6-8b71-4bff-a511-177c01e498f4"};</script>
   <title>ICT Entry Desk</title>
-  <link rel="stylesheet" href="styles.css?v=8bb67901fd18">
-  <script src="supabase-sdk.vendor.js?v=8bb67901fd18" defer></script>
-  <script src="cloud-log.js?v=8bb67901fd18" defer></script>
-  <script src="browser-log.js?v=8bb67901fd18" defer></script>
-  <script src="cloud-backup.js?v=8bb67901fd18" defer></script>
-  <script src="app.js?v=8bb67901fd18" defer></script>
-  <script src="backup-ui.js?v=8bb67901fd18" defer></script>
-  <script src="offline.js?v=8bb67901fd18" defer></script>
+  <link rel="stylesheet" href="styles.css?v=7bc7d06998df">
+  <script src="supabase-sdk.vendor.js?v=7bc7d06998df" defer></script>
+  <script src="cloud-log.js?v=7bc7d06998df" defer></script>
+  <script src="browser-log.js?v=7bc7d06998df" defer></script>
+  <script src="cloud-backup.js?v=7bc7d06998df" defer></script>
+  <script src="app.js?v=7bc7d06998df" defer></script>
+  <script src="backup-ui.js?v=7bc7d06998df" defer></script>
+  <script src="offline.js?v=7bc7d06998df" defer></script>
   <script>
     window.ictAssetLoadFailed=false;
     window.addEventListener('error',event=>{
@@ -32,12 +32,14 @@
         <button type="button" data-nav="history">History</button>
       </nav>
     </header>
-    <p class="test-notice">Signed-in reviews are saved to your private cloud journal after confirmation. An unfinished review is only a draft in this tab. Keep a private downloaded backup.</p>
-    <div id="backup-actions" class="backup-actions" hidden><button id="export-backup" type="button">Export old local archive</button><button id="import-backup" type="button" hidden>Import old local archive</button><input id="backup-file" hidden type="file" accept="application/json,.json" aria-label="Choose old local backup JSON"><span id="cloud-backup-actions" hidden><button id="export-cloud-backup" type="button">Export cloud backup</button><button id="import-cloud-backup" type="button">Import cloud backup</button><input id="cloud-backup-files" type="file" multiple accept="application/json,.json" aria-label="Choose all cloud backup JSON parts"></span><span id="backup-status" role="status"></span></div>
-    <p id="cloud-status" class="load-status" role="status">Connecting to your private journal…</p>
-    <button id="cloud-sign-out" class="cloud-sign-out" type="button" hidden>Sign out here</button>
     <p id="asset-status" class="load-status" role="alert" hidden></p><p id="offline-status" class="load-status" role="status" hidden></p>
     <main id="screen" class="screen"><noscript><p class="load-status">ICT Entry Desk needs JavaScript to sign in and access your journal. Enable JavaScript, then reload.</p></noscript></main>
+    <footer class="journal-tools" aria-label="Journal and account">
+      <p class="test-notice">Signed-in reviews are saved to your private cloud journal after confirmation. An unfinished review is only a draft in this tab. Keep a private downloaded backup.</p>
+      <div id="backup-actions" class="backup-actions" hidden><button id="export-backup" type="button">Export old local archive</button><button id="import-backup" type="button" hidden>Import old local archive</button><input id="backup-file" hidden type="file" accept="application/json,.json" aria-label="Choose old local backup JSON"><span id="cloud-backup-actions" hidden><button id="export-cloud-backup" type="button">Export cloud backup</button><button id="import-cloud-backup" type="button">Import cloud backup</button><input id="cloud-backup-files" type="file" multiple accept="application/json,.json" aria-label="Choose all cloud backup JSON parts"></span><span id="backup-status" role="status"></span></div>
+      <p id="cloud-status" class="load-status" role="status">Connecting to your private journal…</p>
+      <button id="cloud-sign-out" class="cloud-sign-out" type="button" hidden>Sign out here</button>
+    </footer>
     <nav class="bottom-nav" aria-label="Primary navigation">
       <button id="nav-home" type="button" aria-label="Models" title="Models"><span class="nav-symbol" aria-hidden="true">⌂</span><span class="nav-label">Models</span></button>
       <button id="nav-new" class="nav-new" type="button" aria-label="New entry" title="New entry"><span class="nav-symbol" aria-hidden="true">+</span><span class="nav-label">New review</span></button>

@@ -280,6 +280,8 @@ button:disabled{cursor:default;opacity:.55}
 .source-links a{display:flex;align-items:center}
 html{scroll-padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .screen :is(button,input,select,textarea,summary,a):focus{scroll-margin-bottom:calc(80px + env(safe-area-inset-bottom))}
+.journal-tools{border-top:1px solid var(--line);padding-bottom:12px}
+.journal-tools :is(button,input):focus{scroll-margin-bottom:calc(80px + env(safe-area-inset-bottom))}
 
 .test-notice{margin:0;padding:10px 20px;background:#fff5df;color:#675019;font-size:12px;line-height:1.5;text-align:center}.backup-actions{display:flex;gap:8px;flex-wrap:wrap;padding:8px 20px}.backup-actions button{min-height:44px}.backup-actions input{display:none}.load-status{margin:8px 20px;padding:10px 12px;border:1px solid #a34743;background:#fbe9e7;color:#6e2724;line-height:1.5}.load-status[hidden]{display:none}
 .backup-actions[hidden],#cloud-backup-actions[hidden],.bottom-nav[hidden],.cloud-sign-out[hidden],#menu-button[hidden]{display:none!important}
