@@ -153,6 +153,15 @@
     if(Object.hasOwn(entry,'entry_snapshot'))entry.entry_snapshot=opaqueSnapshot(entry.entry_snapshot);
     return entry;
   }
+  // Pure validators shared by the cloud adapter. These do not open or write
+  // IndexedDB; the browser journal behavior below remains unchanged.
+  window.entryValidateNewReview = payload => {
+    const entry=validate(envelope(payload),true);
+    if(!Object.hasOwn(RULESETS,entry.checklist_version)||!Object.hasOwn(entry,'entry_snapshot'))
+      throw fail('A current review requires a versioned snapshot');
+    return entry;
+  };
+  window.entryValidateBackupReview = validateBackupEntry;
   const publicEntry = row => ({id:row.id,checklist_id:row.checklist_id,checklist_version:row.checklist_version||'legacy',entry_time_utc:row.entry_time_utc,checklist_met:row.checklist_met,entry_snapshot:Object.hasOwn(RULESETS,row.checklist_version)?row.entry_snapshot??null:null,outcome:OUTCOMES.includes(row.outcome)?row.outcome:'not_recorded',outcome_updated_at:row.outcome_updated_at??null});
   const backupEntry = row => ({...publicEntry(row),entry_snapshot:row.entry_snapshot??null});
   function sameImmutable(a,b){
@@ -175,6 +184,8 @@
     const closed=wins+losses+breakEven;
     return {total_reviews:rows.length,scored_reviews:scored,unavailable_reviews:rows.length-scored,win_points:wins,wins,losses,break_even:breakEven,closed_trades:closed,win_rate:closed?100*wins/closed:null,average_checklist_quality:scored?quality/scored:null,full_checklist_rate:scored?100*full/scored:null,full_checklist_reviews:full};
   }
+  window.entryPublishedPublicRow = publicEntry;
+  window.entryPublishedScoreboard = scoreboard;
   async function open(){
     return new Promise((resolve,reject)=>{
       const request=indexedDB.open(DB_NAME,DB_VERSION);let blocked=false;

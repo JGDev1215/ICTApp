@@ -282,3 +282,10 @@ html{scroll-padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .screen :is(button,input,select,textarea,summary,a):focus{scroll-margin-bottom:calc(80px + env(safe-area-inset-bottom))}
 
 .test-notice{margin:0;padding:10px 20px;background:#fff5df;color:#675019;font-size:12px;line-height:1.5;text-align:center}.backup-actions{display:flex;gap:8px;flex-wrap:wrap;padding:8px 20px}.backup-actions button{min-height:44px}.backup-actions input{display:none}.load-status{margin:8px 20px;padding:10px 12px;border:1px solid #a34743;background:#fbe9e7;color:#6e2724;line-height:1.5}.load-status[hidden]{display:none}
+.backup-actions[hidden],#cloud-backup-actions[hidden],.bottom-nav[hidden],.cloud-sign-out[hidden],#menu-button[hidden]{display:none!important}
+#cloud-backup-actions{display:flex;flex-wrap:wrap;gap:8px}
+.cloud-auth-form{display:grid;gap:10px;max-width:420px;margin:18px 0}
+.cloud-auth-form input{min-height:44px;font:inherit;padding:8px 10px;border:1px solid #a9b8ae;border-radius:7px}
+.cloud-auth-form button{min-height:44px}
+.cloud-sign-out{margin:4px 20px 8px;min-height:44px;padding:6px 12px;border:1px solid #a9b8ae;background:#fff;color:var(--ink);border-radius:7px}
+#cloud-status[data-kind="info"]{border-color:#cbded2;background:#edf7ef;color:#174f3b}

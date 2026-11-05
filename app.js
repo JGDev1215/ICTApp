@@ -1,6 +1,6 @@
-// Local UI SHA-256: 8af8eb7640879f3ceb770951967128fc30da5f9175c958010988a35ef1515fa4
 "use strict";
-const fetch=()=>Promise.reject(new Error("Network access disabled in static app"));
+// Keep dormant market requests blocked without shadowing the browser fetch used by Supabase.
+const blockedMarketFetch=()=>Promise.reject(new Error("Network access disabled in static app"));
 
 
 const models = [
@@ -15,9 +15,10 @@ const CHECKLIST_VERSION = "2026-11-03.2";
 const IFVG_ILLUSTRATIVE_VERSION = "2026-11-03.3";
 function checklistVersionFor(model){return model==='ifvg'?IFVG_ILLUSTRATIVE_VERSION:CHECKLIST_VERSION;}
 const state = {exampleMode:"valid",screen:"entry", returnScreen:"entry", draftActive:true, marketInstrument:"", marketDateNY:"", marketCutoffUTC:"", marketMessage:"", marketContextIds:[],marketTargetId:null,manualTargetDraft:null,marketRangeIds:null,marketContextError:"", hiddenContextReviewed:false, legacyRecovery:false, liquidity:{skipped:false,swept:[],target:null}, liquidityDraws:{buy:{type:'',detail:'',price:''},sell:{type:'',detail:'',price:''}}, dealingRange:{status:"skipped"}, rangeError:"", liquidityError:"", liquidityReturn:"home", liquidityOpen:null, entryTimeUtc:null, inputTimeZone:null, scoreboard:null, selectedEntry:null, outcomeSelection:"not_recorded", outcomeMessage:null, outcomeSaved:false, model:null, direction:"long", variant:"fvg", answers:{}, timeValue:"", dateValue:"", clockValue:"", questionIndex:0, entries:[], apiStatus:"loading", saving:false, saveMessage:null, savedEntry:null, undoDraft:null, storageAvailable:true};
+let authUser=null, authStatus='loading', authMessage='', authEpoch=0, authIdentityVerified=false;
 state.rejectedSave=null;
 const HistoricalSnapshotClientType=typeof window!=='undefined' ? window.HistoricalSnapshotClient : null;
-let phase2Client=typeof HistoricalSnapshotClientType==='function' ? new HistoricalSnapshotClientType((...args)=>fetch(...args)) : null;
+let phase2Client=typeof HistoricalSnapshotClientType==='function' ? new HistoricalSnapshotClientType((...args)=>blockedMarketFetch(...args)) : null;
 let entryMarketLoadSequence=0;
 let phase2PreviewEnabled=false;
 let phase2PersistentLocal=true;
@@ -54,7 +55,7 @@ async function useDeclaredFallbackCutoff(){
   const request=++entryMarketLoadSequence;
   state.marketMessage='Checking the local historical fallback declaration…';renderEntry();
   try{
-    const response=await fetch('/api/market/availability',{headers:{Accept:'application/json'},cache:'no-store'});
+    const response=await blockedMarketFetch('/api/market/availability',{headers:{Accept:'application/json'},cache:'no-store'});
     if(!response.ok) throw new Error('Fallback unavailable');
     const availability=await response.json();
     if(request!==entryMarketLoadSequence || state.screen!=='entry') return;
@@ -71,7 +72,7 @@ async function useDeclaredFallbackCutoff(){
     renderEntry();
   }
 }
-function resetPhase2Client(){entryMarketLoadSequence++;historicalChart.request++;historicalChart.response=null;historicalChart.status='idle';phase2Client=typeof HistoricalSnapshotClientType==='function' ? new HistoricalSnapshotClientType((...args)=>fetch(...args)) : null;}
+function resetPhase2Client(){entryMarketLoadSequence++;historicalChart.request++;historicalChart.response=null;historicalChart.status='idle';phase2Client=typeof HistoricalSnapshotClientType==='function' ? new HistoricalSnapshotClientType((...args)=>blockedMarketFetch(...args)) : null;}
 // Read-only local fallback view. This is deliberately outside draftSnapshot and saved entries.
 const historicalPanel={date:"",cutoff:"",open:false,status:"idle",message:"",response:null,request:0};
 const liquidityTypes = {
@@ -368,7 +369,7 @@ async function readYahooCache(){
   const requestId=++yahooPanel.requestId;
   yahooPanel.status='loading';yahooPanel.result=null;yahooPanel.message='Reading private cache…';renderEntry();
   try{
-    const response=await fetch(`/api/market/yahoo-cache?symbol=${encodeURIComponent(symbol)}`,{headers:{Accept:'application/json'},cache:'no-store'});
+    const response=await blockedMarketFetch(`/api/market/yahoo-cache?symbol=${encodeURIComponent(symbol)}`,{headers:{Accept:'application/json'},cache:'no-store'});
     if(!response.ok) throw new Error('Private cache unavailable. Manual review remains available.');
     const item=await response.json();
     if(item?.schema_version!=='phase2-yahoo-cache-close-v1' || item.source_qualification!=='yahoo_provider_series_unverified' ||
@@ -390,7 +391,7 @@ async function readYahooLatest(){
   const symbol=selectedSymbol(),request=++yahooLatestPanel.request;
   yahooLatestPanel.symbol=symbol;yahooLatestPanel.observation=null;yahooLatestPanel.status='loading';
   try{
-    const response=await fetch(`/api/market/yahoo-latest?symbol=${encodeURIComponent(symbol)}`,{headers:{Accept:'application/json'},cache:'no-store'});
+    const response=await blockedMarketFetch(`/api/market/yahoo-latest?symbol=${encodeURIComponent(symbol)}`,{headers:{Accept:'application/json'},cache:'no-store'});
     if(!response.ok)throw new Error('Selected Yahoo observation unavailable.');
     const data=await response.json(),observation=data?.observation;
     if(observation && (observation.symbol!==symbol || observation.bar_interval!=='1m' || observation.feed_delay_status!=='unverified'))throw new Error('Invalid Yahoo observation.');
@@ -405,7 +406,7 @@ async function refreshYahooLatest(){
   const symbol=selectedSymbol();
   yahooLatestPanel.refreshing=true;yahooLatestPanel.message='Requesting selected Yahoo price…';renderEntry();
   try{
-    const response=await fetch('/api/market/yahoo-latest',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({symbol}),cache:'no-store'});
+    const response=await blockedMarketFetch('/api/market/yahoo-latest',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({symbol}),cache:'no-store'});
     if(!response.ok)throw new Error('Yahoo price request unavailable.');
     const result=await response.json();
     if(result?.status==='refreshed')yahooLatestPanel.message='Selected Yahoo price updated; provider label and feed delay remain unverified.';
@@ -428,7 +429,7 @@ async function readGithubSnapshot(){
   githubPanel.status='loading';githubPanel.message='Reading published GitHub snapshot…';
   if(state.screen==='entry')renderEntry();
   try{
-    const response=await fetch('/api/market/github-snapshot',{headers:{Accept:'application/json'},cache:'no-store'});
+    const response=await blockedMarketFetch('/api/market/github-snapshot',{headers:{Accept:'application/json'},cache:'no-store'});
     const data=await response.json();
     if(!response.ok || !['stale','recent_unverified'].includes(data?.status) ||
        data.snapshot?.schema_version!=='ict-market-data-v2' ||
@@ -557,7 +558,7 @@ async function refreshSelectedPrice(){
   yahooPanel.refreshing=true;yahooPanel.refreshMessage='Refreshing selected price…';renderEntry();
   let message;
   try{
-    const response=await fetch('/api/market/yahoo-cache/refresh',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({symbol}),cache:'no-store'});
+    const response=await blockedMarketFetch('/api/market/yahoo-cache/refresh',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({symbol}),cache:'no-store'});
     if(!response.ok) throw new Error('Refresh unavailable');
     const result=await response.json();
     if(result?.symbol!==symbol || !['refreshed','cached_rate_limited','rate_limited_no_cache'].includes(result.status)) throw new Error('Invalid refresh response');
@@ -575,7 +576,7 @@ async function refreshSelected15m(){
   yahoo15mPanel.message='Refreshing selected 15-minute history…';renderEntry();
   let message;
   try{
-    const response=await fetch('/api/market/yahoo-cache/refresh-15m',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({symbol}),cache:'no-store'});
+    const response=await blockedMarketFetch('/api/market/yahoo-cache/refresh-15m',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({symbol}),cache:'no-store'});
     if(!response.ok) throw new Error('15-minute refresh unavailable');
     const result=await response.json();
     if(result?.symbol!==symbol || result.interval!=='15m' ||
@@ -633,7 +634,7 @@ async function loadHistoricalChart(snapshot){
   historicalChart.response=null;historicalChart.status='loading';
   try{
     const url=`/api/market/candles?date=${encodeURIComponent(snapshot.display_date_ny)}&cutoff=${encodeURIComponent(snapshot.requested_cutoff_at_utc.replace('+00:00','Z'))}&snapshot=${encodeURIComponent(snapshot.snapshot_id)}`;
-    const response=await fetch(url,{headers:{Accept:'application/json'},cache:'no-store'});
+    const response=await blockedMarketFetch(url,{headers:{Accept:'application/json'},cache:'no-store'});
     if(!response.ok) throw new Error('Historical candles unavailable');
     const data=await response.json();
     if(data?.schema_version!=='phase2-private-candles-v1' || data.mode!=='historical_fallback_unverified' ||
@@ -762,7 +763,7 @@ async function loadHistoricalContext(){
   }
   renderLiquidity();
   try{
-    const response=await fetch(`/api/market/context?date=${encodeURIComponent(date)}&cutoff=${encodeURIComponent(cutoff)}`,{headers:{Accept:'application/json'},cache:'no-store'});
+    const response=await blockedMarketFetch(`/api/market/context?date=${encodeURIComponent(date)}&cutoff=${encodeURIComponent(cutoff)}`,{headers:{Accept:'application/json'},cache:'no-store'});
     if(!response.ok) throw new Error(response.status===503?'Historical fallback is not configured or its source is unavailable.':'Historical snapshot unavailable for that date and cutoff.');
     const data=await response.json(),context=data?.context;
     if(data.mode!=='historical_fallback_unverified' || context?.verified_market_levels!==false || context?.captured_at_entry!==false || context?.contract_id!==null || !Array.isArray(context.rows) || context.rows.length!==20 || context.rows.some(row=>!Array.isArray(row.slots) || row.slots.length!==3) || !data.instrument_id || !data.price_basis || !data.observed_tick_grid) throw new Error('Unexpected historical fallback response.');
@@ -847,15 +848,35 @@ function openOutcome(){state.outcomeSaved=false;state.outcomeSelection=Object.ha
 async function saveOutcome(){
   if(state.saving || !state.selectedEntry || !Object.hasOwn(outcomes,state.outcomeSelection)) return;
   const entry=state.selectedEntry,outcome=state.outcomeSelection;
+  const ownerId=authUser?.id, startedAt=authEpoch;
+  if(!ownerId)return;
   state.saving=true;state.outcomeMessage=null;state.outcomeSaved=false;render();
   try{
-    const updated=await fetchEntriesJSON({method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({outcome})},`/api/entries/${entry.id}/outcome`);
-    if(!updated || updated.id!==entry.id || updated.outcome!==outcome) throw new Error('Unexpected response');
-    state.selectedEntry={...entry,outcome:updated.outcome,outcome_updated_at:updated.outcome_updated_at};
+    if(!Number.isInteger(entry.revision) || entry.revision<1) throw new Error('Missing cloud revision');
+    const updated=await fetchEntriesJSON({method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({outcome,expected_revision:entry.revision})},`/api/entries/${entry.id}/outcome`);
+    if(startedAt!==authEpoch || authUser?.id!==ownerId)return;
+    if(!updated || updated.id!==entry.id || updated.outcome!==outcome || updated.revision!==entry.revision+1) throw new Error('Unexpected response');
+    state.selectedEntry=updated;
     if(state.savedEntry?.id===entry.id) state.savedEntry=state.selectedEntry;
-    state.outcomeSaved=true;state.saving=false;syncSavingControls();show('detail');await loadEntries();
-  }catch{
-    state.saving=false;syncSavingControls();state.outcomeMessage='Outcome could not be confirmed. Retry saving your selected outcome.';render();
+    state.outcomeSaved=true;state.saving=false;syncSavingControls();cloudStatus('Saved to cloud');show('detail');await loadEntries();
+  }catch(error){
+    if(startedAt!==authEpoch || authUser?.id!==ownerId)return;
+    state.saving=false;syncSavingControls();
+    try{
+      const current=await fetchEntriesJSON({headers:{Accept:'application/json'}},`/api/entries/${entry.id}`);
+      if(startedAt!==authEpoch || authUser?.id!==ownerId)return;
+      if(current?.id===entry.id && current.revision>entry.revision && current.outcome===outcome){
+        state.selectedEntry=current;if(state.savedEntry?.id===entry.id)state.savedEntry=current;
+        state.outcomeSaved=true;cloudStatus('Saved to cloud');show('detail');await loadEntries();return;
+      }
+      if(current?.id===entry.id && current.revision!==entry.revision){
+        state.selectedEntry=current;
+        state.outcomeMessage=`Cloud outcome is now ${outcomeLabel(current.outcome)}. Your selection was ${outcomeLabel(outcome)}. Review both before saving again.`;
+        cloudStatus('Outcome conflict — review before saving','error');render();return;
+      }
+    }catch{ /* A failed read cannot confirm whether the write happened. */ }
+    state.outcomeMessage=error?.code==='signed_out'?'Session ended. Sign in again to confirm this outcome.':'Outcome unconfirmed. Reconnect and retry only after checking the current cloud outcome.';
+    cloudStatus('Outcome unconfirmed','error');render();
   }
 }
 
@@ -863,7 +884,8 @@ const $ = (id) => document.getElementById(id);
 let entryLoadSequence = 0;
 const saveAttempts = new Map();
 const savingControls = new Map();
-const draftStorageKey = "ict-entry-desk-draft-v1";
+// The old local draft key remains untouched. Cloud drafts belong to one Auth user.
+let draftStorageKey = null;
 function draftSnapshot(){
   const time=parsedEntryTime();
   return {entryTimeUtc:time.valid?time.iso:null,inputTimeZone:deviceTimeZone(),liquidityReturn:state.liquidityReturn,checklistVersion:checklistVersionFor(state.model),draftActive:state.draftActive,marketInstrument:state.marketInstrument,marketDateNY:state.marketDateNY,marketCutoffUTC:state.marketCutoffUTC,legacyRecovery:state.legacyRecovery,marketTargetId:state.marketTargetId,manualTargetDraft:state.manualTargetDraft?{...state.manualTargetDraft}:null,marketRangeIds:state.marketRangeIds?[...state.marketRangeIds]:null,manualRangeDraft:state.manualRangeDraft?JSON.parse(JSON.stringify(state.manualRangeDraft)):null,liquidity:JSON.parse(JSON.stringify(state.liquidity)),liquidityDraws:JSON.parse(JSON.stringify(state.liquidityDraws)),dealingRange:JSON.parse(JSON.stringify(state.dealingRange)),model:state.model,direction:state.direction,variant:state.variant,
@@ -871,6 +893,7 @@ function draftSnapshot(){
     screen:["detail","outcome","saved"].includes(state.screen)?state.returnScreen:state.screen,returnScreen:state.returnScreen,questionIndex:state.questionIndex};
 }
 function persistDraft(){
+  if(!draftStorageKey || !authUser) return false;
   try{
     if(!state.draftActive && !state.model && !saveAttempts.size && !state.undoDraft) sessionStorage.removeItem(draftStorageKey);
     else sessionStorage.setItem(draftStorageKey,JSON.stringify({...draftSnapshot(),draftVersion:4,
@@ -962,6 +985,7 @@ function updateDraftStatus(){
   if(status){status.textContent=state.storageAvailable?'Draft saved in this tab':'Draft recovery unavailable — browser storage is blocked or full';status.className=`draft-status ${state.storageAvailable?'':'error'}`;}
 }
 function restoreDraft(){
+  if(!draftStorageKey || !authUser) return;
   try{
     const draft=JSON.parse(sessionStorage.getItem(draftStorageKey));
     if(!draft || typeof draft!=='object') return;
@@ -1031,7 +1055,8 @@ function resumeReview(){
   show(['entry','liquidity','home','setup','check','review'].includes(destination)?destination:(state.model?'setup':'entry'));
 }
 async function fetchEntriesJSON(options,url="/api/entries"){
-  return window.entryBrowserLog(options,url);
+  if(!authUser || typeof window.entryCloudLog!=='function') throw Object.assign(new Error('Cloud journal unavailable'),{status:503,code:'signed_out'});
+  return window.entryCloudLog(options,url);
 }
 
 function modelInfo(){ return models.find(model => model.id === state.model); }
@@ -1203,6 +1228,109 @@ const shortPrompts = {
 };
 function promptFor(entry){ return shortPrompts[entry.id] || entry.title; }
 const screen = $("screen");
+function cloudStatus(message,kind='info'){
+  const node=$('cloud-status');
+  node.textContent=message;
+  node.dataset.kind=kind;
+}
+function renderAuth(){
+  $('backup-actions').hidden=true;
+  $('cloud-backup-actions').hidden=true;
+  $('cloud-sign-out').hidden=true;
+  document.querySelector('.bottom-nav').hidden=true;
+  $('menu-button').hidden=true;
+  $('home-button').disabled=true;
+  if(authStatus==='loading'){
+    cloudStatus('Connecting to your private journal…');
+    screen.innerHTML='<h1 tabindex="-1">Connecting</h1><p>Checking your sign-in before loading a journal or draft.</p>';
+  }else if(authStatus==='config'){
+    cloudStatus('Cloud setup required', 'error');
+    screen.innerHTML='<h1 tabindex="-1">Cloud setup required</h1><p>This app has no verified cloud connection. No review has been loaded or saved. Keep your existing browser journal and private backup untouched. Finish cloud setup before using this build.</p>';
+  }else if(authStatus==='recovery'){
+    cloudStatus('Set a new password');
+    screen.innerHTML=`<h1 tabindex="-1">Set a new password</h1><form id="cloud-password-form" class="cloud-auth-form"><label for="cloud-new-password">New password</label><input id="cloud-new-password" type="password" autocomplete="new-password" required minlength="8"><button class="primary-button" type="submit">Update password</button></form><p class="feedback" role="status">${escapeHTML(authMessage)}</p>`;
+  }else{
+    cloudStatus('Signed out — cloud journal unavailable');
+    screen.innerHTML=`<h1 tabindex="-1">Sign in</h1><p>Use the email address invited to this journal. An unfinished review is only saved in the original tab.</p><form id="cloud-sign-in-form" class="cloud-auth-form"><label for="cloud-email">Journal email address</label><input id="cloud-email" type="email" autocomplete="username" required><label for="cloud-password">Password</label><input id="cloud-password" type="password" autocomplete="current-password" required><button class="primary-button" type="submit">Sign in</button></form><button id="cloud-reset-password" class="text-button" type="button">Send password reset email</button><p class="feedback" role="status">${escapeHTML(authMessage)}</p>`;
+  }
+  window.ictCloudBootstrapComplete=true;
+}
+function leaveCloudSession(message=''){
+  if(authUser) persistDraft();
+  const pendingOutcome=state.saving && state.screen==='outcome';
+  authEpoch++;
+  authIdentityVerified=false;
+  authUser=null;draftStorageKey=null;authStatus='signed_out';authMessage=pendingOutcome?`${message} After signing in, check the current outcome before trying again.`:message;
+  ++entryLoadSequence;state.saving=false;syncSavingControls();clearDraft();
+  state.entries=[];state.scoreboard=null;state.selectedEntry=null;state.savedEntry=null;
+  state.draftActive=true;state.screen='entry';state.apiStatus='unavailable';
+  renderAuth();
+}
+function enterCloudSession(user){
+  if(!authIdentityVerified)return;
+  if(!user?.id){leaveCloudSession();return;}
+  if(authUser?.id===user.id && authStatus==='ready')return;
+  if(authUser?.id!==user.id && authUser) persistDraft();
+  authEpoch++;
+  authUser=null;draftStorageKey=null;state.saving=false;syncSavingControls();clearDraft();
+  authUser=user;authStatus='ready';authMessage='';
+  draftStorageKey=`ict-entry-desk-cloud-draft-v1:${user.id}`;
+  state.entries=[];state.scoreboard=null;
+  state.selectedEntry=null;state.savedEntry=null;state.draftActive=true;state.screen='entry';state.apiStatus='loading';
+  restoreDraft();
+  if(!state.marketInstrument)state.marketInstrument='NQ_continuous_provisional';
+  $('backup-actions').hidden=false;$('cloud-backup-actions').hidden=false;$('cloud-sign-out').hidden=false;
+  document.querySelector('.bottom-nav').hidden=false;$('menu-button').hidden=false;$('home-button').disabled=false;
+  cloudStatus('Signed in — loading cloud journal');
+  render();loadEntries();
+  window.ictCloudBootstrapComplete=true;
+}
+async function startCloudApp(){
+  renderAuth();
+  if(!window.entryCloudAuth){authStatus='config';renderAuth();return;}
+  let verified=false,recoveryPending=false,lastAuthEvent=null;
+  const applyAuthEvent=(event,nextUser)=>{
+    if(event==='PASSWORD_RECOVERY'){
+      leaveCloudSession();
+      authStatus='recovery';authMessage='';renderAuth();return;
+    }
+    if(authStatus==='recovery' && event!=='SIGNED_OUT')return;
+    if(!nextUser)leaveCloudSession('Your session ended. Sign in again to confirm any pending save.');
+    else if(authUser && authUser.id!==nextUser.id)leaveCloudSession('Account changed. Sign in again before opening a journal.');
+    else if(authIdentityVerified)enterCloudSession(nextUser);
+  };
+  try{
+    // Subscribe first: the SDK can emit PASSWORD_RECOVERY before getUser finishes.
+    // Queue events until getUser verifies identity; no journal/draft is loaded yet.
+    window.entryCloudAuth.onAuthStateChange((event,nextUser)=>{
+      if(event==='INITIAL_SESSION')return;
+      if(!verified){
+        if(event==='PASSWORD_RECOVERY')recoveryPending=true;
+        else{
+          if(event==='SIGNED_OUT')recoveryPending=false;
+          lastAuthEvent={event,user:nextUser};
+        }
+        return;
+      }
+      applyAuthEvent(event,nextUser);
+    });
+    const user=await window.entryCloudAuth.getUser();
+    verified=true;
+    authIdentityVerified=true;
+    if(recoveryPending)applyAuthEvent('PASSWORD_RECOVERY',user);
+    else if(lastAuthEvent?.event==='SIGNED_OUT')applyAuthEvent('SIGNED_OUT',null);
+    else if(lastAuthEvent?.user && lastAuthEvent.user.id!==user?.id)leaveCloudSession('Account changed during sign-in. Reload and verify your account.');
+    else if(user)enterCloudSession(user);
+    else leaveCloudSession();
+  }catch(error){
+    verified=true;
+    authStatus=['config_missing','sdk_missing'].includes(error?.code)?'config':'signed_out';
+    authMessage=authStatus==='config'?'':error?.code==='owner_required'?
+      'This account is not the journal owner. Use the invited account.':
+      'Connection unavailable. Reconnect and try again; nothing was saved to cloud.';
+    renderAuth();
+  }
+}
 function answerFor(entry){ return entry.auto === "window" ? checkSilverWindow().status : (state.answers[entry.id] || "pending"); }
 
 // Hand-drawn OHLC geometry: [open, close, high-on-screen, low-on-screen].
@@ -1528,10 +1656,10 @@ function renderRecovery(){
   if(!first){show('home');return;}
   const entry=JSON.parse(first[0]);
   const rejected=state.rejectedSave?.body===first[0] && state.rejectedSave?.key===first[1] ? state.rejectedSave.status : null;
-  layout('<h1 tabindex="-1">Confirm saved review</h1>',
-    `<p class="review-detail">This review may already be in your log. Retry to confirm it before starting another review.</p><div class="saved-card"><strong>${labels[entry.checklist_id]}</strong><span>${formatLocal(entry.entry_time_utc)}</span><span>Checklist ${entry.checklist_met?'Met':'Not Met'}</span><small>${versionLabel(entry.checklist_version)}</small></div>${modelScopeNote(entry.checklist_id)}${nyTimeNote(entry.checklist_id,entry.entry_time_utc)}${entry.entry_snapshot?.schema_version===3?'<p class="historical-warning">Historical context in this pending review is retrospective and unverified. Retry keeps the original request and key.</p>':''}<p class="helper">${saveAttempts.size>1?`${saveAttempts.size} earlier save attempts need confirmation.`:'The original result and request are kept for this confirmation.'}</p><div class="action-stack"><button class="primary-button" type="button" data-action="save" ${state.saving?'disabled':''}>${state.saving?'Confirming…':'Retry Save Entry'}</button><button class="text-button" type="button" data-action="history" ${state.saving?'disabled':''}>View history</button></div><p id="save-feedback" class="feedback" role="status"></p>`);
+  layout('<h1 tabindex="-1">Confirm cloud save</h1>',
+    `<p class="review-detail">Save uncertain — this review may already be in your cloud journal. Retry the same entry and request key to confirm it before starting another review.</p><div class="saved-card"><strong>${labels[entry.checklist_id]}</strong><span>${formatLocal(entry.entry_time_utc)}</span><span>Checklist ${entry.checklist_met?'Met':'Not Met'}</span><small>${versionLabel(entry.checklist_version)}</small></div>${modelScopeNote(entry.checklist_id)}${nyTimeNote(entry.checklist_id,entry.entry_time_utc)}${entry.entry_snapshot?.schema_version===3?'<p class="historical-warning">Historical context in this pending review is retrospective and unverified. Retry keeps the original request and key.</p>':''}<p class="helper">${saveAttempts.size>1?`${saveAttempts.size} earlier save attempts need confirmation.`:'The original result and request are kept for this confirmation.'}</p><div class="action-stack"><button class="primary-button" type="button" data-action="save" ${state.saving?'disabled':''}>${state.saving?'Confirming…':'Retry Save Entry'}</button><button class="text-button" type="button" data-action="history" ${state.saving?'disabled':''}>View history</button></div><p id="save-feedback" class="feedback" role="status"></p>`);
   if(rejected){
-    const notice=rejected===409?'This request key conflicts with an existing entry. Check History before editing or discarding this pending review; a new save could create a duplicate.':'The log rejected this request. It did not confirm a save. Review your answers and context before trying a new request.';
+    const notice=rejected===409?'This request key conflicts with a cloud entry. Check History before editing or discarding this pending review; a new save could create a duplicate.':'The log rejected this request. It did not confirm a save. Review your answers and context before trying a new request.';
     screen.innerHTML+=`<p class="notice" role="alert">${notice}</p><div class="action-stack"><button class="secondary-button" type="button" data-action="recovery-edit">Edit rejected review</button><button class="text-button" type="button" data-action="recovery-discard">Discard pending review</button></div>`;
   }
   if(state.saveMessage){const feedback=$("save-feedback");feedback.textContent=state.saveMessage.text;feedback.className=`feedback ${state.saveMessage.kind}`;}
@@ -1588,32 +1716,33 @@ function renderReview(){
     screen.querySelector('.liquidity-summary')?.after(warning);
   }
   if(state.saveMessage){feedback.textContent=state.saveMessage.text;feedback.className=`feedback ${state.saveMessage.kind}`;}
-  else if(state.apiStatus === "loading") feedback.textContent="Opening this browser's journal…";
-  else if(state.apiStatus !== "ready") feedback.textContent="Browser journal unavailable. Check site storage and free space, close other ICT Entry Desk tabs, then refresh.";
+  else if(state.apiStatus === "loading") feedback.textContent="Loading your cloud journal…";
+  else if(state.apiStatus !== "ready") feedback.textContent="Cloud journal unavailable. Reconnect and refresh. Your unfinished review remains only in this tab.";
   else if(!marketReady) feedback.textContent=targetTimingProblem||"Reload the historical snapshot and reselect references before saving.";
   else if(!result.resolved) feedback.textContent="Tap a Not sure check above to resolve it.";
   else feedback.textContent="Stores your original required answers and liquidity context. Record a trade outcome separately.";
 }
 function renderSaved(){
   const entry=state.savedEntry;
-  layout(`<div class="saved-hero"><span class="saved-mark ${entry.checklist_met?'':'not-met'}" aria-hidden="true">${entry.checklist_met?'✓':'×'}</span><h1 tabindex="-1">Entry review saved</h1></div>`,
+  layout(`<div class="saved-hero"><span class="saved-mark ${entry.checklist_met?'':'not-met'}" aria-hidden="true">${entry.checklist_met?'✓':'×'}</span><h1 tabindex="-1">Saved to cloud</h1></div>`,
     `${entrySummary(entry)}${validSnapshot(entry.entry_snapshot)?`<div class="liquidity-summary">${liquiditySummary(entry.entry_snapshot.liquidity)}${[4,5].includes(entry.entry_snapshot.schema_version)?drawSummary(entry.entry_snapshot.liquidity_draws):''}</div>`:""}${rangeSummary(entry.entry_snapshot?.dealing_range)}${marketSummary(entry.entry_snapshot)}<p class="outcome-note">${outcomeLabel(entry.outcome)}</p><div class="action-stack"><button class="primary-button" type="button" data-action="saved-outcome">Record trade outcome</button><button class="secondary-button" type="button" data-action="history">View history</button><button class="text-button" type="button" data-action="new">New review</button></div>`);
 }
 function renderHistory(){
   const ready=state.apiStatus==='ready';
   const rows=ready?state.entries.map(entry=>`<button type="button" class="history-card" data-entry="${Number(entry.id)}"><span class="history-glyph" aria-hidden="true">${glyphs[String(entry.checklist_id).startsWith('drill')?'drill':entry.checklist_id]||'▱'}</span><span class="history-info"><strong>${escapeHTML(labels[entry.checklist_id]||'Unknown checklist')}</strong><time datetime="${escapeHTML(entry.entry_time_utc)}">${escapeHTML(formatLocal(entry.entry_time_utc))}</time><small>${qualityText(entry.entry_snapshot)}</small><small>Instrument: ${escapeHTML(instrumentText(entry.entry_snapshot))}</small>${modelScopeHistoryNote(entry.checklist_id)?`<small>${modelScopeHistoryNote(entry.checklist_id)}</small>`:''}<small>Range: ${escapeHTML(rangeHistoryText(entry.entry_snapshot))}</small>${entry.entry_snapshot?.market_context?.state==='historical_reconstruction_unverified'?'<small>Historical context · unverified</small>':''}<span class="history-outcome">${outcomeLabel(entry.outcome)}</span></span><span class="history-result ${entry.checklist_met?'':'not-met'}">${entry.checklist_met?'MET':'NOT MET'}</span></button>`).join(''):'';
-  layout('<h1 tabindex="-1">History</h1>', `${state.draftActive || state.model || saveAttempts.size ? `<button class="secondary-button resume-button" type="button" data-action="resume">${saveAttempts.size?'Confirm pending save':'Resume review'}</button>`:''}${ready?renderScoreboard():''}<h2 class="history-heading">Recent reviews <span>Latest ${state.entries.length} · up to 50</span></h2>${!ready?`<p class="empty-state">${state.apiStatus==='loading'?'Loading entries…':'The local entry log is unavailable.'}</p>`:!state.entries.length?'<p class="empty-state">Your scoreboard starts with your first entry review.</p>':`<div class="history-list">${rows}</div>`}<div class="history-actions"><button class="text-button" type="button" data-action="refresh">Refresh</button></div>`);
+  layout('<h1 tabindex="-1">History</h1>', `${state.draftActive || state.model || saveAttempts.size ? `<button class="secondary-button resume-button" type="button" data-action="resume">${saveAttempts.size?'Confirm pending save':'Resume review'}</button>`:''}${ready?renderScoreboard():''}<h2 class="history-heading">Recent reviews <span>Latest ${state.entries.length} · up to 50</span></h2>${!ready?`<p class="empty-state">${state.apiStatus==='loading'?'Loading entries…':'Cloud journal unavailable. Reconnect and refresh.'}</p>`:!state.entries.length?'<p class="empty-state">Your scoreboard starts with your first entry review.</p>':`<div class="history-list">${rows}</div>`}<div class="history-actions"><button class="text-button" type="button" data-action="refresh">Refresh</button></div>`);
 }
 function renderDetail(){
   const entry=state.selectedEntry,snapshot=entry.entry_snapshot;
   const answers=validSnapshot(snapshot)?`<h2 class="detail-heading">Original required answers</h2><ol class="original-answers">${snapshot.checks.map(check=>`<li><span>${escapeHTML(check.title)}${check.automatic?'<small>Automatic check</small>':''}</span><strong class="${check.answer==='yes'?'good':'bad'}">${check.answer==='yes'?'Yes':'No'}</strong></li>`).join('')}</ol>`:'<p class="notice">Detailed score unavailable. This earlier review retains its original checklist result.</p><p class="helper">Liquidity context and direction were not recorded.</p>';
-  layout(`${backRow('History','history',5)}<h1 tabindex="-1">Entry review</h1>`,`${state.outcomeSaved?'<p class="notice" role="status">Outcome saved. Your original checklist answers are unchanged.</p>':""}${entrySummary(entry)}${validSnapshot(snapshot)?`<div class="liquidity-summary">${liquiditySummary(snapshot.liquidity)}${[4,5].includes(snapshot.schema_version)?drawSummary(snapshot.liquidity_draws):''}</div>`:''}${rangeSummary(snapshot?.dealing_range)}${marketSummary(snapshot)}${answers}<div class="outcome-panel"><h2>Trade outcome</h2><p>${outcomeLabel(entry.outcome)}</p>${entry.outcome_updated_at?`<p class="helper">Updated ${escapeHTML(formatLocal(entry.outcome_updated_at))}</p>`:''}<button type="button" class="secondary-button" data-action="edit-outcome">Record or edit outcome</button></div>`);
+  layout(`${backRow('History','history',5)}<h1 tabindex="-1">Entry review</h1>`,`${state.outcomeSaved?'<p class="notice" role="status">Outcome saved to cloud. Your original checklist answers are unchanged.</p>':""}${entrySummary(entry)}${validSnapshot(snapshot)?`<div class="liquidity-summary">${liquiditySummary(snapshot.liquidity)}${[4,5].includes(snapshot.schema_version)?drawSummary(snapshot.liquidity_draws):''}</div>`:''}${rangeSummary(snapshot?.dealing_range)}${marketSummary(snapshot)}${answers}<div class="outcome-panel"><h2>Trade outcome</h2><p>${outcomeLabel(entry.outcome)}</p>${entry.outcome_updated_at?`<p class="helper">Updated ${escapeHTML(formatLocal(entry.outcome_updated_at))}</p>`:''}<button type="button" class="secondary-button" data-action="edit-outcome">Record or edit outcome</button></div>`);
 }
 function renderOutcome(){
   const entry=state.selectedEntry;
   layout(`${backRow('Entry review','detail',5)}<h1 tabindex="-1">Did you take this trade?</h1>`,`${entrySummary(entry)}<p class="review-detail">Record the trade outcome for this review.</p><div class="outcome-choices" role="group" aria-label="Trade outcome">${Object.entries(outcomes).map(([value,label])=>`<button type="button" class="outcome-choice" data-outcome="${value}" aria-pressed="${state.outcomeSelection===value}">${label}</button>`).join('')}</div><div class="action-stack"><button type="button" class="primary-button" data-action="save-outcome">${state.saving?'Saving…':'Save outcome'}</button></div><p class="feedback ${state.outcomeMessage?'error':''}" role="status">${escapeHTML(state.outcomeMessage||'Original checklist answers stay as recorded at entry.')}</p>`);
 }
 function render(){
+  if(!authUser || authStatus!=='ready'){renderAuth();return;}
   if(state.screen === "entry") renderEntry();
   else if(state.screen === "liquidity") renderLiquidity();
   else if(state.screen === "detail" && state.selectedEntry) renderDetail();
@@ -1648,15 +1777,19 @@ async function loadEntries(){
     state.entries=data.entries;
     state.scoreboard=data.scoreboard || null;
     state.apiStatus="ready";
+    cloudStatus('Cloud journal ready');
   }catch{
     if(sequence!==entryLoadSequence) return;
     state.apiStatus="unavailable";
+    cloudStatus('Cloud journal unavailable — reconnect and refresh','error');
   }
   if(state.screen === "history" || state.screen === "review") render();
 }
 
 async function saveEntry(){
   if(state.saving) return;
+  const ownerId=authUser?.id,startedAt=authEpoch;
+  if(!ownerId)return;
   if(!saveAttempts.size){
     const result=reviewResult(),time=parsedEntryTime();
     if(state.apiStatus!=="ready" || !result.resolved || !time.valid || !validLiquidity(canonicalLiquidity()) || (requiresDraws() && !validCurrentDraws()) || !validRange(state.dealingRange,Boolean(state.marketRangeIds)) ||
@@ -1673,34 +1806,39 @@ async function saveEntry(){
     renderRecovery();return;
   }
   state.saving=true;renderRecovery();syncSavingControls();
+  cloudStatus('Saving to cloud');
   try{
     const created=await fetchEntriesJSON({method:"POST",headers:{"Content-Type":"application/json",Accept:"application/json","Idempotency-Key":requestKey},body});
-    if(!created || !Number.isInteger(created.id) || created.checklist_id!==submitted.checklist_id ||
+    if(startedAt!==authEpoch || authUser?.id!==ownerId)return;
+    if(!created || !Number.isSafeInteger(created.id) || !Number.isSafeInteger(created.revision) || created.revision<1 || created.checklist_id!==submitted.checklist_id ||
        created.checklist_met!==submitted.checklist_met ||
        created.checklist_version!==(submitted.checklist_version || 'legacy') ||
        Date.parse(created.entry_time_utc)!==Math.floor(Date.parse(submitted.entry_time_utc)/1000)*1000 ||
        (submitted.entry_snapshot && !matchingSnapshot(submitted.entry_snapshot,created.entry_snapshot))) throw new Error('Unexpected response');
     state.savedEntry=created;saveAttempts.delete(body);state.saving=false;syncSavingControls();
+    cloudStatus('Saved to cloud');
     if(saveAttempts.size){persistDraft();show('recovery');}
     else{state.undoDraft=null;clearDraft();show('saved');}
     await loadEntries();
   }catch(error){
+    if(startedAt!==authEpoch || authUser?.id!==ownerId)return;
     state.saving=false;syncSavingControls();
-    if(error.status===413){
-      // The local server rejects oversized bodies before parsing or writing.
+    cloudStatus('Save uncertain — retry the same entry','error');
+    if(error.status===413 && error.code==='too_large'){
+      // The adapter's local size check rejects before any cloud request.
       // Keep the review editable; never shorten evidence or reuse this rejected key.
       saveAttempts.delete(body);
-      state.saveMessage={kind:'error',text:'The local server rejected this review because it exceeds the save-size limit. No entry was stored. Edit the review explicitly, then save again; no text or evidence was shortened automatically.'};
+      state.saveMessage={kind:'error',text:'The cloud save rejected this oversized review. No entry was confirmed. Edit it explicitly, then save again; no text or evidence was shortened automatically.'};
       state.screen=saveAttempts.size?'recovery':'review';
       persistDraft();render();return;
     }
     if([400,409].includes(error.status)){
       state.rejectedSave={body,key:requestKey,status:error.status};
       state.saveMessage={kind:'error',text:error.status===409?
-        'The log reports a request-key conflict. Another entry may already use this key. Check History, then choose Edit or Discard if appropriate.':
-        'The log rejected this review. Check the fields and choose Edit to correct it, or Discard to start over.'};
+        'A cloud entry uses this request key with different details. Check History, then choose Edit or Discard if appropriate.':
+        'Cloud save rejected this review. Check the fields and choose Edit to correct it, or Discard to start over.'};
       persistDraft();
-    }else state.saveMessage={kind:'error',text:'Save could not be confirmed. Retry this saved review with the same request key to avoid a duplicate.'};
+    }else state.saveMessage={kind:'error',text:'Save uncertain — retry this same entry and request key after reconnecting to avoid a duplicate.'};
     renderRecovery();
   }
 }
@@ -1910,8 +2048,48 @@ $("nav-home").addEventListener("click",()=>show("home"));
 $("nav-new").addEventListener("click",()=>{replaceDraft();});
 $("nav-history").addEventListener("click",()=>{if(state.saving) return;openHistory();});
 
-restoreDraft();
-if(!state.marketInstrument)state.marketInstrument='NQ_continuous_provisional';
+screen.addEventListener('submit',async event=>{
+  if(!['cloud-sign-in-form','cloud-password-form'].includes(event.target.id))return;
+  event.preventDefault();
+  const form=event.target,button=form.querySelector('button[type="submit"]');button.disabled=true;
+  try{
+    if(form.id==='cloud-sign-in-form'){
+      const email=$('cloud-email').value.trim(),password=$('cloud-password').value;
+      $('cloud-password').value='';
+      const user=await window.entryCloudAuth.signIn(email,password);
+      const verifiedUser=await window.entryCloudAuth.getUser();
+      if(!user?.id || verifiedUser?.id!==user.id)throw new Error('Sign-in identity could not be verified');
+      authIdentityVerified=true;
+      enterCloudSession(verifiedUser);
+    }else{
+      const password=$('cloud-new-password').value;$('cloud-new-password').value='';
+      await window.entryCloudAuth.updatePassword(password);
+      await window.entryCloudAuth.signOut();
+      leaveCloudSession('Password updated. Sign in with the new password.');
+    }
+  }catch(error){
+    authMessage=error?.code==='owner_required'?
+      'This account is not the journal owner. Use the invited account.':
+      'Sign-in or password update failed. Check your details and connection, then try again.';
+    renderAuth();
+  }finally{if(button.isConnected)button.disabled=false;}
+});
+screen.addEventListener('click',async event=>{
+  if(event.target.id!=='cloud-reset-password')return;
+  const email=$('cloud-email')?.value.trim();
+  if(!email){authMessage='Enter your email address first.';renderAuth();return;}
+  event.target.disabled=true;
+  try{
+    await window.entryCloudAuth.resetPassword(email);
+    authMessage='If this address is registered, a reset email will arrive. Check your inbox and spam folder.';
+  }catch{authMessage='Reset email could not be sent. Check the connection or email setup, then try again.';}
+  renderAuth();
+});
+$('cloud-sign-out').addEventListener('click',async()=>{
+  if(state.saving || saveAttempts.size){cloudStatus('Confirm the pending save before signing out','error');return;}
+  persistDraft();
+  try{await window.entryCloudAuth.signOut();leaveCloudSession();}
+  catch{cloudStatus('Sign-out could not be confirmed. Reconnect and try again.','error');}
+});
 loadPhase2Capability();
-render();
-loadEntries();
+startCloudApp();
