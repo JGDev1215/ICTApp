@@ -1,5 +1,5 @@
 "use strict";
-const CACHE='ict-entry-desk-static-7bc7d06998df';
+const CACHE='ict-entry-desk-static-b673958dc21a';
 const CORE_ASSETS=['./','./index.html','./styles.css','./supabase-sdk.vendor.js','./cloud-log.js','./browser-log.js','./cloud-backup.js','./app.js','./backup-ui.js','./offline.js'];
 const OPTIONAL_ASSETS=['./SOURCE_MAP.md','./SOURCE_MAP_IFVG_2026-11-03.3.md'];
 const ASSETS=[...CORE_ASSETS,...OPTIONAL_ASSETS];

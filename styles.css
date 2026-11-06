@@ -168,6 +168,9 @@ h2{font-size:18px;line-height:1.27;letter-spacing:-.025em}
 .draft-status.error{color:var(--red);font-weight:650}
 .example-heading,.answer-heading{font-size:12px;font-weight:700;color:#405e4c;margin-top:15px}
 .answer-heading{margin-top:21px}.answer-choice{font-size:16px;min-height:46px}
+.question-answer{margin-top:18px;padding-top:16px;border-top:1px solid #e8ece8}
+.question-answer .answer-heading{margin-top:0}
+.question-answer .answer-stack,.question-answer .notice,.question-answer .action-stack{margin-top:12px}
 .bottom-nav .nav-new{width:44px;height:44px}.example-toggle button{min-height:44px}
 .back-button,.header-button,.text-button{min-height:44px;min-width:44px}
 .question-note summary{min-height:44px;display:flex;align-items:center;justify-content:center}
